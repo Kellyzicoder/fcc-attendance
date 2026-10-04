@@ -44,3 +44,15 @@ def test_a_branch_team_cannot_open_admin_pages():
     at = AppTest.from_function(script, default_timeout=120).run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.warning and not at.tabs
+
+
+def test_a_church_admin_gets_members_but_not_reports_or_sql():
+    def script():
+        import streamlit as st
+        import attendance as A
+        st.session_state["demo_as"] = "Church admin"
+        A.page_members()
+        A.page_sql()
+    at = AppTest.from_function(script, default_timeout=120).run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.tabs and len(at.warning) == 1

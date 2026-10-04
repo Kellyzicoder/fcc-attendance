@@ -179,3 +179,22 @@ def test_the_bishops_numbers_contain_no_names(store):
     text = A.whatsapp_overview(rows) + str(rows)
     for m in store.list_members():
         assert m["full_name"] not in text and (not m["phone"] or m["phone"] not in text)
+
+
+def test_everyone_download_has_a_sheet_per_church(store):
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(A.all_churches_xlsx(store)))
+    assert wb.sheetnames == ["Everyone"] + A.all_churches(store)
+    assert wb["Everyone"].max_row - 1 == len(store.list_members())
+    assert [c.value for c in wb["Everyone"][1]][0] == "Church"
+    moved = A.ChurchStore(store, A.home_church()).list_members()[0]["id"]
+    store.update_members({moved: {"church": "Sydney"}})  # HQ moves someone to another church
+    assert moved in {m["id"] for m in A.ChurchStore(store, "Sydney").list_members()}
+
+
+def test_people_per_pastor_can_be_changed_for_each_church(store):
+    syd, home = A.ChurchStore(store, "Sydney"), A.ChurchStore(store, A.home_church())
+    assert A.group_size(syd) == A.PASTOR_GROUP_SIZE
+    syd.set_setting("pastor_group_size:Sydney", "15")
+    assert A.group_size(syd) == 15 and A.group_size(home) == A.PASTOR_GROUP_SIZE
