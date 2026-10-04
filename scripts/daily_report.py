@@ -26,7 +26,8 @@ def main() -> int:
     if not os.environ.get("DATABASE_URL") or not cfg["ready"]:
         print("Missing secrets: DATABASE_URL and BREVO_API_KEY (or SMTP_USER + SMTP_PASSWORD) are required.")
         return 1
-    store = A.SqlStore(os.environ["DATABASE_URL"])
+    # the daily email covers the home church (people with no branch set)
+    store = A.ChurchStore(A.SqlStore(os.environ["DATABASE_URL"]), os.environ.get("HOME_CHURCH") or A.home_church())
     if not force and store.sent_on(now.date().isoformat(), "daily"):
         print(f"Today's report was already sent — skipping.")
         return 0

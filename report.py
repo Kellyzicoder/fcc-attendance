@@ -64,7 +64,7 @@ def gather(store, day: dt.date | None = None) -> dict:
             m = mem.get(mid, {})
             t = pd.to_datetime(at, errors="coerce", utc=True)
             present.append(dict(Time=t.tz_convert(A.TZ).strftime("%H:%M") if pd.notna(t) else "",
-                                Name=m.get("full_name", "(removed)"),
+                                Name=m.get("full_name", "(removed)"), Church=A.church_of(m) if m else "",
                                 Type="First-timer" if m.get("type") == "first_timer" else "Member",
                                 Phone=m.get("phone", ""), Group=m.get("group", ""),
                                 **{"First visit today": "Yes" if m.get("first_visit") == shown["date"] else ""}))
@@ -72,7 +72,7 @@ def gather(store, day: dt.date | None = None) -> dict:
 
     df = A.missed_streaks(members, services, day)
     follow = [] if df.empty else [
-        dict(Status="Red" if r.level == "red" else "Yellow", Name=r.name, **{"Missed in a row": int(r.missed)},
+        dict(Status="Red" if r.level == "red" else "Yellow", Name=r.name, Church=r.church, **{"Missed in a row": int(r.missed)},
              **{"Last seen": A.fmt_date(r.last_seen, "%d %b %Y")},
              Phone=r.phone, Group=r.group, **{"Invited by": r.invited_by})
         for r in df[df.level != "ok"].itertuples()]

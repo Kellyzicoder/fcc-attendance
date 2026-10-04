@@ -7,7 +7,7 @@ Real member data is never stored in this repository.
 
 Tables (same in SQLite and Postgres):
   members(id, full_name, phone, email, group_name, role, status, type, date_joined, first_visit,
-          invited_by, follow_up, created_at, pastor, age_group, version)
+          invited_by, follow_up, created_at, pastor, age_group, church, version)
   services(service_date PRIMARY KEY, name)
   attendance(service_date, member_id, checked_at, PRIMARY KEY (service_date, member_id))
   activity_log(id, at, kind, service_date, member_id, detail, by_name, result)   -- append-only history
@@ -42,8 +42,8 @@ ARCHIVE_DAYS = 730  # not seen for two years → moved to the Archive list (they
 AMBER, CRIMSON = "#fab219", "#d03b3b"   # reserved status colours (always shown with icon + label)
 # Chart colours, validated for colour-blind separation and contrast on the dark surface (#141c22).
 SERIES = dict(members="#2aa686", first_timers="#5a8ef0")
-ORANGE = "#f0782a"
-STATUS = dict(ok="#2aa686", orange=ORANGE, yellow=AMBER, red=CRIMSON)
+BLUE = "#5a8ef0"  # "missed this service": information, not a warning
+STATUS = dict(ok="#2aa686", blue=BLUE, yellow=AMBER, red=CRIMSON)
 INK = dict(primary="#e8eef2", secondary="#9fb0bd", muted="#6b7c89", grid="rgba(255,255,255,0.06)")
 
 
@@ -65,8 +65,8 @@ def new_id() -> str:
 
 # ---------------------------------------------------------------- storage (SQL: SQLite demo or Postgres)
 MEMBER_COLS = ["full_name", "phone", "email", "group_name", "role", "status", "type", "date_joined", "first_visit",
-               "invited_by", "follow_up", "created_at", "pastor", "age_group"]
-OPTIONAL_COLS = {"pastor": "has_pastor", "age_group": "has_age"}  # columns added later: used only once they exist
+               "invited_by", "follow_up", "created_at", "pastor", "age_group", "church"]
+OPTIONAL_COLS = {"pastor": "has_pastor", "age_group": "has_age", "church": "has_church"}  # columns added later: used only once they exist
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS members (
         id TEXT PRIMARY KEY, full_name TEXT NOT NULL, phone TEXT, email TEXT, group_name TEXT, role TEXT,
@@ -89,7 +89,8 @@ SCHEMA = [
 # Columns added after launch. Postgres skips ones that exist; SQLite reports "duplicate column", which is ignored.
 MIGRATIONS = [("versioned", "ALTER TABLE members ADD COLUMN {ine}version INTEGER NOT NULL DEFAULT 1"),
               ("has_pastor", "ALTER TABLE members ADD COLUMN {ine}pastor TEXT"),
-              ("has_age", "ALTER TABLE members ADD COLUMN {ine}age_group TEXT")]
+              ("has_age", "ALTER TABLE members ADD COLUMN {ine}age_group TEXT"),
+              ("has_church", "ALTER TABLE members ADD COLUMN {ine}church TEXT")]
 # Postgres only: lock the app's tables so the public (publishable) key used by the welcome form can't read them.
 PG_SECURITY = [f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY"
                for t in ("members", "services", "attendance", "settings", "email_log", "activity_log")]
@@ -149,6 +150,7 @@ class SqlStore:
         self.versioned = False  # set by _ensure_schema once the members.version column is known to exist
         self.has_pastor = False  # likewise for members.pastor
         self.has_age = False  # and members.age_group (Adult / Child)
+        self.has_church = False  # and members.church (which branch a person belongs to; blank = home church)
         self._wrote = {}  # service date -> time of the last tick/untick, so a poll never shows an older read
         self._schema_ready = False
         self._down_until = 0.0
@@ -363,10 +365,15 @@ class SqlStore:
     def _member_cols(self) -> list[str]:
         return [c for c in MEMBER_COLS if c not in OPTIONAL_COLS or getattr(self, OPTIONAL_COLS[c])]
 
-    def clear_service(self, date: str, by: str = "") -> int:
-        """Untick everyone for one service in a single step. Returns how many ticks were removed."""
+    def clear_service(self, date: str, by: str = "", only: set | None = None) -> int:
+        """Untick everyone for one service in a single step (`only`: just these people, i.e. one church).
+        Returns how many ticks were removed."""
         with self.transaction():
-            n = self._exec("DELETE FROM attendance WHERE service_date = ?", (date,))
+            if only is None:
+                n = self._exec("DELETE FROM attendance WHERE service_date = ?", (date,))
+            else:
+                n = sum(self._exec("DELETE FROM attendance WHERE service_date = ? AND member_id = ?", (date, mid))
+                        for mid in only)
             self.log("clear_service", f"{n} {'person' if n == 1 else 'people'} unticked at once", None, date, by)
         self._touched(date)
         return n
@@ -603,6 +610,8 @@ def _seed_demo(store: "SqlStore"):
         p["pastor"] = pastors[i // 10]
     for p in people:
         p["age_group"] = "Child" if p["group"] == "Children" else "Adult"
+    for i, p in enumerate(people[40:]):  # two demo branches, so the all-churches overview has something to show
+        p["church"] = "Sydney" if i < 12 else "Melbourne"
     old = (today() - dt.timedelta(days=ARCHIVE_DAYS + 200)).isoformat()
     gone = [dict(id=new_id(), full_name=n, phone="", email="", group="", role="", status="", type="member",
                  date_joined=old, first_visit="", invited_by="", follow_up="", created_at=now_iso(), pastor="",
@@ -632,7 +641,8 @@ def _seed_demo(store: "SqlStore"):
 
 
 @st.cache_resource(show_spinner="Connecting to the database…")
-def get_store():
+def base_store():
+    """The one shared database connection (every church). Pages use get_store(), which is limited to one church."""
     try:
         url = st.secrets.get("database_url")
         ro = st.secrets.get("database_url_readonly")
@@ -643,9 +653,114 @@ def get_store():
     return store
 
 
+def home_church() -> str:
+    """The church everyone belonged to before branches were added (people with no church set)."""
+    return _secret("home_church") or "Auckland"
+
+
+def church_of(m: dict) -> str:
+    return (m.get("church") or "").strip() or home_church()
+
+
+def church_passwords(table: str = "church_passwords") -> dict[str, str]:
+    """Branch sign-ins from Secrets:  [church_passwords]  Sydney = "…"  (ushers), and the same shape under
+    [church_admin_passwords] for each church's pastor and follow-up leads."""
+    try:
+        return {str(k): str(v) for k, v in dict(st.secrets.get(table) or {}).items() if v}
+    except Exception:
+        return {}
+
+
+def shared_passwords() -> list[str]:
+    """Sign-ins that share a password. The password alone decides who someone is, so each must be different;
+    with a duplicate, the higher sign-in (admin, Bishop, church admin, ushers, in that order) would win."""
+    seen, clash = {}, []
+    names = ([("HQ admin", _secret("admin_password")), ("Bishop", _secret("bishop_password"))]
+             + [(f"{c} church admin", p) for c, p in church_passwords("church_admin_passwords").items()]
+             + [(f"{c} team", p) for c, p in church_passwords().items()]
+             + [(f"{home_church()} team", _secret("attendance_password"))])
+    for who, pw in names:
+        if pw and pw in seen:
+            clash.append(f"{seen[pw]} and {who}")
+        elif pw:
+            seen[pw] = who
+    return clash
+
+
+def all_churches(base) -> list[str]:
+    names = {home_church(), *church_passwords(), *church_passwords("church_admin_passwords"),
+             *(church_of(m) for m in base.list_members())}
+    return [home_church()] + sorted(names - {home_church()}, key=str.lower)
+
+
+class ChurchStore:
+    """A view of the database limited to one church. Everything not listed here passes straight through.
+
+    Pages never see another church's people: members, services, ticks, the activity log and untick-all are all
+    filtered to this church, and new people are stamped with it.
+    """
+
+    def __init__(self, base, church: str):
+        self._base, self.church = base, church
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+    def list_members(self):
+        return [m for m in self._base.list_members() if church_of(m) == self.church]
+
+    def _ids(self) -> set:
+        return {m["id"] for m in self.list_members()}
+
+    def list_services(self):
+        """Only services this church actually ticked people at, so another branch's dates never count as missed."""
+        ids, out = self._ids(), []
+        for s in self._base.list_services():
+            p = {k: v for k, v in (s.get("present") or {}).items() if k in ids}
+            if p:
+                out.append({**s, "present": p})
+        return out
+
+    def get_service(self, date: str, *a, **k):
+        s = self._base.get_service(date, *a, **k)
+        if not s:
+            return s
+        ids = self._ids()
+        return {**s, "present": {i: t for i, t in (s.get("present") or {}).items() if i in ids}}
+
+    def clear_service(self, date: str, by: str = "") -> int:
+        return self._base.clear_service(date, by, only=self._ids())
+
+    def upsert_members(self, rows: list[dict]):
+        return self._base.upsert_members([{**r, "church": r.get("church") or self.church} for r in rows])
+
+    def list_registrations(self, status: str = "pending"):
+        regs = self._base.list_registrations(status)  # the welcome form belongs to the home church for now
+        return regs if regs is None or self.church == home_church() else []
+
+    def count_pending(self) -> int:
+        return self._base.count_pending() if self.church == home_church() else 0
+
+    def activity(self, day: str | None = None, limit: int = 300):
+        ids, home = self._ids(), self.church == home_church()
+        return [r for r in self._base.activity(day, limit) if r["member_id"] in ids or (not r["member_id"] and home)]
+
+
+def current_church(base) -> str:
+    """Which church this visitor is looking at: their own branch, or the one an admin picked in the sidebar."""
+    if role(base) == "admin" or base.demo:
+        return st.session_state.get("church_pick") or home_church()
+    return st.session_state.get("church") or home_church()
+
+
+def get_store():
+    base = base_store()
+    return ChurchStore(base, current_church(base))
+
+
 def show_db_down(err: Exception, key: str = "page"):
     """Friendly 'can't reach the database' panel instead of a traceback, with a manual retry."""
-    store = get_store()
+    store = base_store()
     wait = store.retry_in()
     with st.container(border=True):
         st.error(f"**Can't connect to the database.** {err}", icon=":material/cloud_off:")
@@ -687,7 +802,7 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
     """Per person: services missed in a row (most recent first), last seen, and a yellow/red flag.
 
     Only services on or after a person's start (date joined / first visit) count against them.
-    `level` is ok / yellow / red (the follow-up rule). `flag` is the same but shows "orange" for someone who is
+    `level` is ok / yellow / red (the follow-up rule). `flag` is the same but shows "blue" for someone who is
     still ok yet missed the latest service (1–2 in a row), so leaders can see it early.
     People not seen for ARCHIVE_DAYS (two years) are archived: archive="hide" leaves them out (the default, so
     follow-up lists and counts skip them), "only" returns just them, "all" returns everyone.
@@ -720,7 +835,7 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
                          attended=attended, eligible=len(mine), phone=m.get("phone", ""), group=m.get("group", ""),
                          type=m.get("type", "member"), invited_by=m.get("invited_by", ""),
                          follow_up=m.get("follow_up", ""), pastor=m.get("pastor", "") or "", archived=archived,
-                         since=ref, flag=level if level != "ok" else ("orange" if streak else "ok"),
+                         since=ref, church=church_of(m), flag=level if level != "ok" else ("blue" if streak else "ok"),
                          age="Child" if is_child(m) else "Adult"))
     df = pd.DataFrame(rows)
     if df.empty:
@@ -732,8 +847,8 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
 
 
 LEVEL_LABEL = {"red": f"🔴 Red · {RED_AT}+ missed", "yellow": f"🟡 Yellow · {YELLOW_AT}–{RED_AT - 1} missed",
-               "orange": "🟠 Orange · missed last service", "ok": "🟢 On track"}
-TINT = {"Red": "rgba(208,59,59,.20)", "Yellow": "rgba(250,178,25,.25)", "Orange": "rgba(240,120,42,.22)"}
+               "blue": "🔵 Blue · missed this service", "ok": "🟢 On track"}
+TINT = {"Red": "rgba(208,59,59,.20)", "Yellow": "rgba(250,178,25,.25)", "Blue": "rgba(90,142,240,.22)"}
 
 
 def tint_status(col):
@@ -839,69 +954,126 @@ def _secret(name: str) -> str:
         return ""
 
 
-def role(store) -> str:
-    """'admin', 'team' or '' (not signed in). Demo data is open to everyone as admin.
+ROLE_LABEL = {"admin": "Admin", "bishop": "Bishop", "lead": "Church admin", "team": "Team"}
+DEMO_ROLES = {"Admin": "admin", "Bishop": "bishop", "Church admin": "lead", "Branch team": "team"}
 
-    Two passwords in Secrets: `attendance_password` for the team (dashboard, check-in, follow-up, live, insights)
-    and `admin_password` for the Admin pages (members, sign-ups, reports, SQL). Without `admin_password`,
-    the team password opens everything, as before.
+
+def role(store) -> str:
+    """'admin', 'bishop', 'lead', 'team' or '' (not signed in).
+
+    Passwords in Secrets:
+      admin_password            HQ admin: every church, with names, and all the Admin pages
+      bishop_password           the all-churches overview only: numbers, never names
+      [church_admin_passwords]  one per church (Sydney = "…"): the pastor and follow-up leads of that church;
+                                their own church only, including its Members page
+      [church_passwords]        one per branch (Sydney = "…"): that church's ushers; no Members page
+      attendance_password   the home church's team
+    Without admin_password the home team password opens everything, as before. In the demo (no database)
+    there are no passwords: the sidebar lets you preview each kind of sign-in.
     """
     if store.demo:
-        return "admin"
+        return DEMO_ROLES.get(st.session_state.get("demo_as"), "admin")
     r = st.session_state.get("role", "")
-    if r == "team" and not _secret("admin_password"):
+    if r == "team" and not _secret("admin_password") and st.session_state.get("church", home_church()) == home_church():
         return "admin"
     return r
 
 
 def is_admin(store) -> bool:
+    """HQ admin: every church."""
     return role(store) == "admin"
 
 
-def gate(store, admin: bool = False) -> bool:
-    """Sign-in check at the top of every page. admin=True also requires the admin password."""
+def can_manage(store) -> bool:
+    """HQ admin, or the admin of the church being looked at."""
+    return role(store) in ("admin", "lead")
+
+
+def gate(store, admin: bool = False, hq: bool = False) -> bool:
+    """Sign-in check at the top of every page. admin=True needs a church admin or HQ admin; hq=True needs HQ."""
+    r = role(store)
+    allowed = ("admin",) if hq else ("admin", "lead") if admin else ("admin", "lead", "team")
+    if r == "bishop":
+        st.warning("The Bishop's sign-in shows the all-churches overview only.", icon=":material/lock:")
+        return False
     if store.demo:
+        if r not in allowed:
+            st.warning("This page is for admins.", icon=":material/lock:")
+            return False
         return True
     team_pw, admin_pw = _secret("attendance_password"), _secret("admin_password")
     if not team_pw:
         st.error("Set `attendance_password` in the app's Secrets before real member data can be shown.")
         return False
-    r = role(store)
-    if r == "admin" or (r == "team" and not admin):
+    if r in allowed:
         return True
-    if r == "team":
+    if r:
         st.warning("This page is for admins. Sign out and sign in with the admin password to use it.",
                    icon=":material/lock:")
         return False
+    sign_in_form()
+    return False
+
+
+def sign_in_form():
+    team_pw, admin_pw, bishop_pw = _secret("attendance_password"), _secret("admin_password"), _secret("bishop_password")
     with st.form("att_login"):
         entered = st.text_input("Password", type="password")
         if st.form_submit_button("Sign in", type="primary"):
+            found = None
             if admin_pw and entered == admin_pw:
-                st.session_state.role = "admin"
-                st.rerun()
-            if entered == team_pw:
-                st.session_state.role = "team"
+                found = ("admin", home_church())
+            elif bishop_pw and entered == bishop_pw:
+                found = ("bishop", "")
+            elif entered and entered in church_passwords("church_admin_passwords").values():
+                found = ("lead", next(c for c, p in church_passwords("church_admin_passwords").items() if p == entered))
+            elif entered and entered in church_passwords().values():
+                found = ("team", next(c for c, p in church_passwords().items() if p == entered))
+            elif team_pw and entered == team_pw:
+                found = ("team", home_church())
+            if found:
+                st.session_state.role, st.session_state.church = found
                 st.rerun()
             st.error("Wrong password.")
-    return False
 
 
 def actor(store) -> str:
     """Name for the activity log: the name typed on the check-in tab, plus the sign-in type."""
-    who = "Admin" if is_admin(store) else "Team"
+    who = ROLE_LABEL.get(role(store), "Team")
     name = " ".join(str(st.session_state.get("by_name", "")).split())[:40]
     return f"{name} ({who})" if name else who
 
 
 def account_box(store):
-    """Sidebar: who is signed in, and a sign-out button."""
-    if store.demo or not role(store):
+    """Sidebar: an account badge for whoever is signed in, the church they are looking at, and sign out."""
+    base = getattr(store, "_base", store)
+    r = role(base)
+    if not r:
         return
     with st.sidebar:
-        label = "Admin" if is_admin(store) else "Team"
-        st.caption(f"Signed in · {label}")
-        if st.button("Sign out", icon=":material/logout:", key="sign_out"):
-            st.session_state.pop("role", None)
+        if base.demo:
+            st.selectbox("Preview as", list(DEMO_ROLES), key="demo_as",
+                         help="The demo has no passwords, so you can try each kind of sign-in here.")
+            r = role(base)
+        name = " ".join(str(st.session_state.get("by_name", "")).split())
+        initials = "".join(w[0] for w in name.split()[:2]).upper() or ROLE_LABEL[r][0]
+        where = "All churches · numbers only" if r == "bishop" else current_church(base)
+        st.html(f'<div class="acct"><span class="acct-pic">{_esc(initials)}</span><span class="acct-text">'
+                f'<b>{_esc(name or ROLE_LABEL[r])}</b><small>{ROLE_LABEL[r]} · {_esc(where)}</small></span></div>')
+        if r == "admin" or (base.demo and r != "bishop"):
+            try:
+                names = all_churches(base)
+            except DbUnavailable:
+                names = [home_church()]
+            st.radio("Church", names, key="church_pick",
+                     help="Admins can open any church. Branch teams only ever see their own.")
+        if r == "admin" and not base.demo and shared_passwords():
+            st.warning("These sign-ins share a password, so the app can't tell them apart: "
+                       + "; ".join(shared_passwords()) + ". Give each one a different password in Secrets.",
+                       icon=":material/key:")
+        if not base.demo and st.button("Sign out", icon=":material/logout:", key="sign_out"):
+            for k in ("role", "church", "church_pick"):
+                st.session_state.pop(k, None)
             st.rerun()
 
 
@@ -973,20 +1145,21 @@ def checkin_panel(store):
         k[4].metric("First-timers", f"{sum(1 for m in members if m['id'] in present and m.get('type') == 'first_timer')}",
                     border=True)
         with card("ci_list"):
-            st.caption(f"Live · ticks from other phones appear within a few seconds · showing {len(shown)} of {len(listed)}")
-            cols = st.columns(per_row)
-            for i, m in enumerate(shown):
-                key = f"ci_{date}_{m['id']}"
-                st.session_state[key] = m["id"] in present  # sync ticks made on other devices
-                tag = " · first-timer" if m.get("type") == "first_timer" else ""
-                tag += " · child" if is_child(m) else ""
-                tag += " · archive" if m["id"] in archived else ""
-                cols[i % per_row].checkbox(f"{m['full_name']}{tag}", key=key, on_change=on_tick, args=(m["id"],))
+            st.caption(f"Live · ticks from other phones appear within a few seconds · showing {len(shown)} of {len(listed)} · A to Z")
+            st.html(f"<style>.st-key-ci_grid {{--ci-cols: {per_row};}}</style>")
+            with st.container(key="ci_grid"):  # CSS grid (see app.py): A to Z across, one column on a phone
+                for m in shown:
+                    key = f"ci_{date}_{m['id']}"
+                    st.session_state[key] = m["id"] in present  # sync ticks made on other devices
+                    tag = " · first-timer" if m.get("type") == "first_timer" else ""
+                    tag += " · child" if is_child(m) else ""
+                    tag += " · archive" if m["id"] in archived else ""
+                    st.checkbox(f"{m['full_name']}{tag}", key=key, on_change=on_tick, args=(m["id"],))
 
     with st.container(key="live_ci"):  # refreshes quietly (see app.py CSS)
         live_list()
 
-    if is_admin(store):
+    if can_manage(store):
         with st.expander("Untick everyone for this service", icon=":material/remove_done:"):
             n_now = len((store.get_service(date) or {}).get("present") or {})
             st.caption(f"Removes all {n_now} tick{'s' if n_now != 1 else ''} for **{day:%A %d %B %Y}** in one go. "
@@ -1107,22 +1280,21 @@ def page_dashboard():
         adults, kids = split_ages(list(last.get("present") or {}), mem)
         red = int((df.level == "red").sum()) if not df.empty else 0
         yellow = int((df.level == "yellow").sum()) if not df.empty else 0
-        orange = int((df.flag == "orange").sum()) if not df.empty else 0
-        ok = (int((df.level == "ok").sum()) if not df.empty else 0) - orange
+        blue = int((df.flag == "blue").sum()) if not df.empty else 0
+        ok = (int((df.level == "ok").sum()) if not df.empty else 0) - blue
         month = tday[:7]
         ft_month = [m for m in members if (m.get("first_visit") or "").startswith(month)]
         last_day = dt.date.fromisoformat(last["date"])
 
         st.html(kpi_row([
-            dict(icon="👥", label=f"Last service · {last_day:%d %b}", value=n_last,
-                 foot=_delta(n_last - n_prev if n_prev is not None else None, "",
-                             f"vs {dt.date.fromisoformat(prev['date']):%d %b}" if prev else "first service")),
+            dict(icon="👥", label=f"This service · {last_day:%d %b}", value=n_last,
+                 foot=f'<span class="kpi-sub">{_esc(last.get("name") or "Service")} · people present</span>'),
             dict(icon="🧒", label=f"Adults and kids · {last_day:%d %b}", value=f"{adults} + {kids}",
                  foot=f'<span class="kpi-sub">{adults} adult{"s" if adults != 1 else ""} · {kids} '
                       f'kid{"s" if kids != 1 else ""} · {n_last} overall</span>'),
             dict(icon="🔔", label="Need a follow-up call", value=red + yellow,
                  foot=f'<span class="pill red">● {red} red</span> <span class="pill amber">● {yellow} yellow</span> '
-                      f'<span class="pill orange">● {orange} missed last</span>'),
+                      f'<span class="pill blue">● {blue} missed this service</span>'),
             dict(icon="✨", label=f"First-timers · {today():%B}", value=len(ft_month),
                  foot=(f'<span class="pill blue">{pending} sign-up{"s" if pending != 1 else ""} to approve</span>'
                        if pending else '<span class="kpi-sub">no sign-ups waiting</span>')),
@@ -1133,12 +1305,12 @@ def page_dashboard():
             a, b = st.container(key="dash_charts").columns([1, 1.35], gap="medium")
             with a:  # donut: where everyone on the register stands
                 fig = go.Figure(go.Pie(
-                    labels=["On track", "Missed last service", "Yellow", "Red"], values=[ok, orange, yellow, red],
+                    labels=["On track", "Missed this service", "Yellow", "Red"], values=[ok, blue, yellow, red],
                     hole=0.72, sort=False,
-                    marker=dict(colors=[STATUS["ok"], STATUS["orange"], STATUS["yellow"], STATUS["red"]],
+                    marker=dict(colors=[STATUS["ok"], STATUS["blue"], STATUS["yellow"], STATUS["red"]],
                                 line=dict(color="#141c22", width=2)),
                     textinfo="none", hovertemplate="%{label}: %{value} people (%{percent})<extra></extra>"))
-                fig.add_annotation(text=f"<b style='font-size:30px;color:{INK['primary']}'>{ok + orange + yellow + red}</b>"
+                fig.add_annotation(text=f"<b style='font-size:30px;color:{INK['primary']}'>{ok + blue + yellow + red}</b>"
                                         f"<br><span style='color:{INK['secondary']}'>on the register</span>",
                                    showarrow=False, x=0.5, y=0.5)
                 fig.update_layout(showlegend=True, legend=dict(orientation="h", y=-0.05, x=0.5, xanchor="center"))
@@ -1213,6 +1385,88 @@ def page_dashboard():
 
     with st.container(key="live_dash"):  # refreshes quietly (see app.py CSS)
         body()
+
+
+def church_numbers(base) -> list[dict]:
+    """One row of numbers per church. No names: this is all the Bishop's sign-in can load."""
+    rows, month = [], today().isoformat()[:7]
+    for c in all_churches(base):
+        cs = ChurchStore(base, c)
+        members, services = cs.list_members(), cs.list_services()
+        mem = {m["id"]: m for m in members}
+        past = sorted([s for s in services if s["date"] <= today().isoformat()], key=lambda s: s["date"])
+        last = past[-1] if past else None
+        p = list((last or {}).get("present") or {})
+        adults, kids = split_ages(p, mem)
+        df = missed_streaks(members, services)
+        n = (lambda f: int((df.flag == f).sum()) if not df.empty else 0)
+        rows.append(dict(church=c, date=last["date"] if last else "", present=len(p), adults=adults, kids=kids,
+                         first=sum(1 for i in p if mem[i].get("type") == "first_timer"),
+                         new_month=sum(1 for m in members if (m.get("first_visit") or "").startswith(month)),
+                         register=len(df), red=n("red"), yellow=n("yellow"), blue=n("blue"),
+                         trend=[len(s["present"]) for s in past[-12:]],
+                         change=len(p) - len(past[-2]["present"]) if len(past) > 1 else None))
+    return rows
+
+
+def whatsapp_overview(rows: list[dict]) -> str:
+    lines = [f"*FCC · all churches · {today():%a %d %b %Y}* ⛪",
+             f"✅ Present: *{sum(r['present'] for r in rows)}* "
+             f"(🧑 {sum(r['adults'] for r in rows)} adults · 🧒 {sum(r['kids'] for r in rows)} kids)",
+             f"👋 First-timers: *{sum(r['first'] for r in rows)}*", ""]
+    for r in rows:
+        when = f" ({fmt_date(r['date'], '%d %b', '')})" if r["date"] else ""
+        lines.append(f"*{r['church']}*{when}: {r['present']} present · {r['adults']} adults · {r['kids']} kids · "
+                     f"{r['first']} first-timers · 🔴 {r['red']} 🟡 {r['yellow']}")
+    return "\n".join(lines)
+
+
+@db_safe
+def page_overview():
+    base = base_store()
+    header("All churches", "Every branch side by side — numbers only, no names", base)
+    if role(base) not in ("admin", "bishop"):
+        if not role(base) and not base.demo:
+            sign_in_form()
+        else:
+            st.warning("This page is for the Bishop and admins.", icon=":material/lock:")
+        return
+    demo_note(base)
+    rows = church_numbers(base)
+    tot = {k: sum(r[k] for r in rows) for k in ("present", "adults", "kids", "first", "register", "red", "yellow", "new_month")}
+    st.html(kpi_row([
+        dict(icon="⛪", label="Churches", value=len(rows), foot=f'<span class="kpi-sub">{tot["register"]} people on the registers</span>'),
+        dict(icon="👥", label="Present · latest services", value=tot["present"],
+             foot=f'<span class="kpi-sub">{tot["adults"]} adults · {tot["kids"]} kids</span>'),
+        dict(icon="✨", label=f"First-timers · {today():%B}", value=tot["new_month"],
+             foot=f'<span class="kpi-sub">{tot["first"]} at the latest services</span>'),
+        dict(icon="🔔", label="Need a follow-up call", value=tot["red"] + tot["yellow"],
+             foot=f'<span class="pill red">● {tot["red"]} red</span> <span class="pill amber">● {tot["yellow"]} yellow</span>'),
+    ]))
+    table = pd.DataFrame([{"Church": r["church"], "Latest service": fmt_date(r["date"], "%a %d %b", "None yet"),
+                           "Present": r["present"], "Change": r["change"], "Adults": r["adults"], "Kids": r["kids"],
+                           "First-timers": r["first"], "On the register": r["register"], "🔴 Red": r["red"],
+                           "🟡 Yellow": r["yellow"], "🔵 Missed this service": r["blue"],
+                           "Last 12 services": r["trend"]} for r in rows])
+    with card("ov_table"):
+        st.markdown(f"**Church by church** · {len(rows)} churches")
+        st.dataframe(table, hide_index=True, width="stretch", column_config={
+            "Change": st.column_config.NumberColumn("vs before", format="%+d", help="Compared with that church's previous service"),
+            "Last 12 services": st.column_config.LineChartColumn("Last 12 services", y_min=0)})
+        st.download_button("Download these numbers (CSV)", table.drop(columns=["Last 12 services"]).to_csv(index=False),
+                           f"all_churches_{today().isoformat()}.csv", "text/csv", icon=":material/download:")
+    fig = go.Figure()
+    names = [r["church"] for r in rows]
+    fig.add_bar(x=names, y=[r["adults"] for r in rows], name="Adults", marker_color=SERIES["members"],
+                hovertemplate="%{y} adults<extra></extra>")
+    fig.add_bar(x=names, y=[r["kids"] for r in rows], name="Kids", marker_color=SERIES["first_timers"],
+                hovertemplate="%{y} kids<extra></extra>")
+    fig.update_layout(barmode="stack", bargap=0.45, hovermode="x unified")
+    with card("ov_chart"):
+        _plot(fig, 320, "People present at each church's latest service", key="ov_bar")
+    with st.expander("Summary to send by WhatsApp (numbers only)", icon=":material/chat:"):
+        st.code(whatsapp_overview(rows), language=None, wrap_lines=True)
+        st.caption("Tap the copy icon at the top right of the box, then paste into WhatsApp.")
 
 
 @db_safe
@@ -1292,7 +1546,14 @@ def person_panel(store):
                                icon=":material/download:")
 
 
-PASTOR_GROUP_SIZE = 10  # each pastor looks after about ten people
+PASTOR_GROUP_SIZE = 10  # default number of people per pastor / shepherd; admins can change it on the Pastors tab
+
+
+def group_size(store) -> int:
+    try:
+        return max(1, int(store.get_setting(f"pastor_group_size:{getattr(store, 'church', '')}", "") or PASTOR_GROUP_SIZE))
+    except ValueError:
+        return PASTOR_GROUP_SIZE
 
 
 def pastors_panel(store):
@@ -1308,14 +1569,22 @@ def pastors_panel(store):
     named = df[df.pastor != ""]
     if named.empty:
         st.info("No one has a pastor yet. An admin can type a pastor's name in the **Pastor** column under "
-                "**Members → Register** (about ten people each), and their lists appear here.",
+                "**Members → Register**, and their lists appear here.",
                 icon=":material/diversity_3:")
         return
     summary = (named.groupby("pastor").agg(People=("id", "count"), here=("here", "sum"),
                                            Red=("level", lambda c: int((c == "red").sum())),
                                            Yellow=("level", lambda c: int((c == "yellow").sum()))).reset_index())
-    summary = summary.rename(columns={"pastor": "Pastor", "here": "Came last service"})
-    summary["People"] = summary.People.map(lambda n: f"{n} of {PASTOR_GROUP_SIZE}" + (" ⚠️" if n > PASTOR_GROUP_SIZE else ""))
+    summary = summary.rename(columns={"pastor": "Pastor", "here": "Came this service"})
+    size = group_size(store)
+    if can_manage(store):
+        new = st.number_input("People per pastor or shepherd", min_value=1, max_value=200, value=size, step=1,
+                              key="pastor_size", help="How many people each pastor, shepherd or leader looks after. "
+                                                      "A ⚠️ shows next to anyone who has more than this.")
+        if int(new) != size:
+            store.set_setting(f"pastor_group_size:{getattr(store, 'church', '')}", str(int(new)))
+            size = int(new)
+    summary["People"] = summary.People.map(lambda n: f"{n} of {size}" + (" ⚠️" if n > size else ""))
     with card("pastor_all"):
         st.markdown(f"**All pastors** · {len(summary)} pastors · {len(named)} people assigned · "
                     f"{len(df) - len(named)} not assigned yet")
@@ -1323,7 +1592,7 @@ def pastors_panel(store):
     who = st.selectbox("Pastor", sorted(named.pastor.unique(), key=str.lower) + ["Not assigned yet"], key="pastor_pick")
     mine = df[df.pastor == ""] if who == "Not assigned yet" else df[df.pastor == who]
     table = pd.DataFrame({"Status": mine.flag.map(LEVEL_LABEL), "Name": mine.name,
-                          "Last service": mine.here.map({True: "✅ Came", False: "—"}),
+                          "This service": mine.here.map({True: "✅ Came", False: "—"}),
                           "Missed in a row": mine.missed,
                           "Last seen": mine.last_seen.map(lambda v: fmt_date(v, "%d %b %Y")), "Phone": mine.phone})
     with card("pastor_one"):
@@ -1417,14 +1686,15 @@ def followup_table(view: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({
         "Status": view.flag.map(LEVEL_LABEL), "Name": view.name, "Missed in a row": view.missed,
         "Last seen": pd.to_datetime(view.last_seen, errors="coerce").dt.strftime("%d %b %Y").fillna("Not yet"),
-        "Attendance": view.rate, "Phone": view.phone, "Pastor": view.pastor, "Adult / Child": view.age,
+        "Attendance": view.rate, "Phone": view.phone, "Church": view.church, "Pastor": view.pastor,
+        "Adult / Child": view.age,
         "Group": view.group,
         "Type": view.type.map({"member": "Member", "first_timer": "First-timer"}).fillna(view.type),
         "Invited by": view.invited_by})
 
 
 def followup_panel(store):
-    show = st.segmented_control("Show", ["Needs follow-up", "Red only", "Yellow only", "Missed last service", "Everyone"],
+    show = st.segmented_control("Show", ["Needs follow-up", "Red only", "Yellow only", "Missed this service", "Everyone"],
                                 default="Needs follow-up", key="fu_show") or "Needs follow-up"
     pastors = sorted({(m.get("pastor") or "").strip() for m in store.list_members()} - {""}, key=str.lower)
     pastor = st.selectbox("Pastor", ["All pastors"] + pastors, key="fu_pastor") if pastors else "All pastors"
@@ -1439,18 +1709,18 @@ def followup_panel(store):
             st.info("No services recorded yet. Tick people on the **Check-in** tab and this list fills itself in.")
             return
         red, yellow = int((df.level == "red").sum()), int((df.level == "yellow").sum())
-        orange = int((df.flag == "orange").sum())
+        blue = int((df.flag == "blue").sum())
         k = st.columns(5)
         k[0].metric("🔴 Red", red, f"{RED_AT}+ in a row", delta_color="off", border=True)
         k[1].metric("🟡 Yellow", yellow, f"{YELLOW_AT}–{RED_AT - 1} in a row", delta_color="off", border=True)
-        k[2].metric("🟠 Orange", orange, "missed last service", delta_color="off", border=True)
+        k[2].metric("🔵 Blue", blue, "missed this service", delta_color="off", border=True)
         k[3].metric("🟢 On track", int((df.flag == "ok").sum()), border=True)
         last = past[-1]
-        k[4].metric("Last service", f"{len(last.get('present') or {})} present",
+        k[4].metric("This service", f"{len(last.get('present') or {})} present",
                     dt.date.fromisoformat(last["date"]).strftime("%a %d %b"), delta_color="off", border=True)
 
         view = {"Needs follow-up": df[df.level != "ok"], "Red only": df[df.level == "red"],
-                "Yellow only": df[df.level == "yellow"], "Missed last service": df[df.missed >= 1],
+                "Yellow only": df[df.level == "yellow"], "Missed this service": df[df.missed >= 1],
                 "Everyone": df}[show]
         if pastor != "All pastors":
             view = view[view.pastor.str.strip() == pastor]
@@ -1487,7 +1757,7 @@ def followup_panel(store):
         live_followup()
 
 
-EDIT_COLS = ["full_name", "type", "age_group", "phone", "email", "group", "pastor", "role", "status", "date_joined", "first_visit",
+EDIT_COLS = ["full_name", "type", "age_group", "phone", "email", "group", "pastor", "role", "status", "date_joined",
              "invited_by", "follow_up"]
 STATUSES = ["Active", "Away", "Inactive", "Moved", "Left", "Transferred", "Deceased"]
 
@@ -1498,18 +1768,37 @@ def _as_date(v) -> str:
     return "" if pd.isna(d) else d.strftime("%d/%m/%Y")
 
 
+def all_churches_xlsx(base) -> bytes:
+    """Everyone on every register as one Excel file: an "Everyone" sheet with a Church column, then a sheet per church."""
+    import io
+    rows = [{"Church": church_of(m), "Name": m.get("full_name", ""), "Type": "First-timer" if m.get("type") == "first_timer" else "Member",
+             "Adult / Child": "Child" if is_child(m) else "Adult", "Phone": m.get("phone", ""), "Email": m.get("email", ""),
+             "Pastor": m.get("pastor", ""), "Group": m.get("group", ""), "Status": m.get("status", "") or "Active",
+             "Joined": fmt_date(m.get("date_joined"), "%d/%m/%Y", "")} for m in base.list_members()]
+    df = pd.DataFrame(rows).sort_values(["Church", "Name"], key=lambda c: c.str.lower())
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as xl:
+        df.to_excel(xl, index=False, sheet_name="Everyone")
+        for c in all_churches(base):
+            df[df.Church == c].drop(columns=["Church"]).to_excel(xl, index=False, sheet_name=c[:31])
+    return buf.getvalue()
+
+
 def register_editor(store):
     """Editable register: click a cell, type, then Save. Rows are never deleted here — set Status instead."""
     m = pd.DataFrame(store.list_members())
     if m.empty:
         st.info("No members yet — use **Import CSV** to load your register.")
         return
-    for c in EDIT_COLS:
+    hq = is_admin(store)
+    cols = EDIT_COLS + (["church"] if hq else [])  # HQ can move someone to another church
+    for c in cols:
         if c not in m.columns:
             m[c] = ""
+    m["church"] = m.apply(church_of, axis=1)
     versions_now = dict(zip(m["id"], m["version"])) if "version" in m.columns else {}
-    m = m.set_index("id")[EDIT_COLS].fillna("")
-    for c in ("date_joined", "first_visit"):
+    m = m.set_index("id")[cols].fillna("")
+    for c in ("date_joined",):
         m[c] = m[c].map(_as_date)
     m["status"] = m["status"].map(lambda v: v or "Active")  # blank status means active
     m["age_group"] = m.apply(lambda r: "Child" if is_child(r) else "Adult", axis=1)  # blank means adult
@@ -1536,18 +1825,19 @@ def register_editor(store):
             "phone": st.column_config.TextColumn("Phone", max_chars=30),
             "email": st.column_config.TextColumn("Email", max_chars=120),
             "group": st.column_config.TextColumn("Group"),
+            "church": st.column_config.SelectboxColumn("Church", options=all_churches(base_store()), required=True,
+                                                       help="Change this to move someone to another church"),
             "pastor": st.column_config.TextColumn("Pastor", help="The pastor who looks after this person", max_chars=60),
             "role": st.column_config.TextColumn("Ministry / role"),
             "status": st.column_config.SelectboxColumn("Status", options=STATUSES + extra),
             "date_joined": st.column_config.TextColumn("Joined", help="DD/MM/YYYY", max_chars=10),
-            "first_visit": st.column_config.TextColumn("First visit", help="DD/MM/YYYY", max_chars=10),
             "invited_by": st.column_config.TextColumn("Invited by"),
             "follow_up": st.column_config.TextColumn("Follow-up notes"),
         })
     changes, bad_dates = {}, []
     for mid in edited.index:
         diff = {}
-        for c in EDIT_COLS:
+        for c in cols:
             old, new = view.at[mid, c], edited.at[mid, c]
             old = "" if old is None or (not isinstance(old, str) and pd.isna(old)) else str(old).strip()
             new = "" if new is None or (not isinstance(new, str) and pd.isna(new)) else str(new).strip()
@@ -1605,6 +1895,11 @@ def page_members():
 
     with tab_list:
         register_editor(store)
+        if is_admin(store):
+            st.download_button("Download every church's register (Excel, one sheet per church)",
+                               all_churches_xlsx(base_store()), f"fcc_registers_{today().isoformat()}.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               icon=":material/table_view:")
 
     with tab_signups:
         signups(store)
@@ -1794,7 +2089,7 @@ def page_live():
                     delta_color="off", border=True)
         k[2].metric("Of the register", f"{len(present) / max(len(active), 1):.0%}", f"{len(active)} people",
                     delta_color="off", border=True)
-        k[3].metric("Last service", prev_n if prev else "–",
+        k[3].metric("Previous service", prev_n if prev else "–",
                     dt.date.fromisoformat(prev["date"]).strftime("%a %d %b") if prev else None,
                     delta_color="off", border=True)
 
@@ -1858,7 +2153,7 @@ def page_insights():
 
     k = st.columns(4)
     k[0].metric("Services recorded", len(per), border=True)
-    k[1].metric("Last service", int(last.present),
+    k[1].metric("This service", int(last.present),
                 f"{int(last.present - prev.present):+d} vs previous" if prev is not None else None, border=True)
     k[2].metric("Average (last 4)", f"{per.present.tail(4).mean():.0f}", border=True)
     k[3].metric("Active people", len(recent_ids), "came at least once in the last 4 services",
@@ -1972,7 +2267,7 @@ def page_reports():
     import report as R
     store = get_store()
     header("Reports", "The 5pm email to church leaders — who gets it, what's in it, and send it now", store)
-    if not gate(store, admin=True):
+    if not gate(store, hq=True):
         return
     demo_note(store)
     cfg = _mail_cfg()
@@ -2141,7 +2436,7 @@ ORDER BY first_timers DESC""",
 def page_sql():
     store = get_store()
     header("SQL", "Ask the database anything — read-only, so nothing can be changed from here", store)
-    if not gate(store, admin=True):
+    if not gate(store, hq=True):
         return
     demo_note(store)
     mode, _ = layout_prefs()

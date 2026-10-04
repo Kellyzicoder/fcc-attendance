@@ -123,10 +123,10 @@ def test_daily_report_builds(store):
     assert r["subject"] and "<html" in r["html"].lower() and len(r["xlsx"]) > 1000
 
 
-def test_orange_marks_people_who_missed_the_latest_service_only(store):
+def test_blue_marks_people_who_missed_the_latest_service_only(store):
     df = A.missed_streaks(store.list_members(), store.list_services())
-    assert set(df[df.flag == "orange"].missed) <= {1, 2}
-    assert (df[df.flag == "orange"].level == "ok").all()  # orange is an early warning, not yet a follow-up call
+    assert set(df[df.flag == "blue"].missed) <= {1, 2}
+    assert (df[df.flag == "blue"].level == "ok").all()  # blue is only a heads-up, not yet a follow-up call
     assert (df[df.missed == 0].flag == "ok").all()
     assert (df[df.level != "ok"].flag == df[df.level != "ok"].level).all()  # yellow and red are unchanged
 
@@ -149,3 +149,62 @@ def test_follow_up_download_has_the_people_who_need_a_call(store):
     table = A.followup_table(need)
     assert list(table.Name) == list(need.name) and {"Status", "Phone", "Pastor", "Adult / Child"} <= set(table.columns)
     assert len(A._xlsx(table, "Needs follow-up")) > 1000
+
+
+def test_each_church_only_sees_its_own_people(store):
+    names = A.all_churches(store)
+    assert names[0] == A.home_church() and {"Sydney", "Melbourne"} <= set(names)
+    views = {c: A.ChurchStore(store, c) for c in names}
+    ids = {c: {m["id"] for m in v.list_members()} for c, v in views.items()}
+    assert sum(len(i) for i in ids.values()) == len(store.list_members())  # everyone belongs to exactly one church
+    assert not ids["Sydney"] & ids[A.home_church()]
+    for c, v in views.items():
+        for s in v.list_services():
+            assert s["present"] and set(s["present"]) <= ids[c]
+    # someone added while looking at Sydney belongs to Sydney, and untick-all there leaves the others alone
+    views["Sydney"].upsert_members([dict(id="new-syd", full_name="New Sydney Person", type="member", created_at=A.now_iso())])
+    assert "new-syd" in {m["id"] for m in views["Sydney"].list_members()}
+    assert "new-syd" not in {m["id"] for m in views[A.home_church()].list_members()}
+    home_one, syd_one = next(iter(ids[A.home_church()])), next(iter(ids["Sydney"]))
+    store.set_present(FREE_DAY, home_one, True)
+    store.set_present(FREE_DAY, syd_one, True)
+    assert views["Sydney"].clear_service(FREE_DAY) == 1
+    assert home_one in store.get_service(FREE_DAY)["present"]
+
+
+def test_the_bishops_numbers_contain_no_names(store):
+    rows = A.church_numbers(store)
+    assert [r["church"] for r in rows] == A.all_churches(store)
+    assert sum(r["register"] for r in rows) <= len(store.list_members())
+    text = A.whatsapp_overview(rows) + str(rows)
+    for m in store.list_members():
+        assert m["full_name"] not in text and (not m["phone"] or m["phone"] not in text)
+
+
+def test_everyone_download_has_a_sheet_per_church(store):
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(A.all_churches_xlsx(store)))
+    assert wb.sheetnames == ["Everyone"] + A.all_churches(store)
+    assert wb["Everyone"].max_row - 1 == len(store.list_members())
+    assert [c.value for c in wb["Everyone"][1]][0] == "Church"
+    moved = A.ChurchStore(store, A.home_church()).list_members()[0]["id"]
+    store.update_members({moved: {"church": "Sydney"}})  # HQ moves someone to another church
+    assert moved in {m["id"] for m in A.ChurchStore(store, "Sydney").list_members()}
+
+
+def test_people_per_pastor_can_be_changed_for_each_church(store):
+    syd, home = A.ChurchStore(store, "Sydney"), A.ChurchStore(store, A.home_church())
+    assert A.group_size(syd) == A.PASTOR_GROUP_SIZE
+    syd.set_setting("pastor_group_size:Sydney", "15")
+    assert A.group_size(syd) == 15 and A.group_size(home) == A.PASTOR_GROUP_SIZE
+
+
+def test_passwords_that_are_shared_are_reported(monkeypatch):
+    import streamlit as st
+    secrets = {"admin_password": "a", "bishop_password": "b", "attendance_password": "t",
+               "church_admin_passwords": {"Melbourne": "m-admin"}, "church_passwords": {"Melbourne": "m-team"}}
+    monkeypatch.setattr(st, "secrets", secrets)
+    assert A.shared_passwords() == []  # the same church name under both headings is fine
+    secrets["church_passwords"]["Melbourne"] = "m-admin"
+    assert A.shared_passwords() == ["Melbourne church admin and Melbourne team"]

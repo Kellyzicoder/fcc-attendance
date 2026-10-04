@@ -17,7 +17,7 @@ if LOGO.exists():
 st.html("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-:root {--orange: #f0782a; --card: #141c22; --card-line: rgba(255,255,255,.07); --ink: #e8eef2; --ink-2: #9fb0bd; --ink-3: #6b7c89;
+:root {--card: #141c22; --card-line: rgba(255,255,255,.07); --ink: #e8eef2; --ink-2: #9fb0bd; --ink-3: #6b7c89;
        --green: #2aa686; --blue: #5a8ef0; --amber: #fab219; --red: #d03b3b; --gold: #ffcf00;}
 html, body, .stApp, .stMarkdown, [data-testid="stMetric"], [data-testid="stSidebar"] {font-family: 'Inter', system-ui, sans-serif;}
 .block-container {padding-top: 3.2rem; padding-bottom: 3rem; max-width: 1480px;}
@@ -71,7 +71,7 @@ div[class*="st-key-card_"] {background: var(--card); border: 1px solid var(--car
 .pill {display: inline-flex; align-items: center; gap: 4px; padding: .12rem .55rem; border-radius: 999px;
        font-size: .76rem; font-weight: 600; color: var(--ink); white-space: nowrap;}
 .pill.red {background: rgba(208,59,59,.22);} .pill.amber {background: rgba(250,178,25,.20);}
-.pill.blue {background: rgba(90,142,240,.22);} .pill.orange {background: rgba(240,120,42,.24);}
+.pill.blue {background: rgba(90,142,240,.22);}
 
 /* follow-up table */
 .dash-table {width: 100%; border-collapse: collapse; font-size: .88rem;}
@@ -93,6 +93,23 @@ div[class*="st-key-card_"] {background: var(--card); border: 1px solid var(--car
           background: rgba(255,255,255,.06); font-size: .85rem;}
 .feed-empty {color: var(--ink-3);}
 .dash-table td:nth-child(2), .dash-table td:nth-child(3), .dash-table td:nth-child(4) {white-space: nowrap;}
+
+/* check-in names: a grid that reads A to Z across; fewer columns on small screens, one on a phone */
+.st-key-ci_grid {display: grid !important; grid-template-columns: repeat(var(--ci-cols, 3), minmax(0, 1fr));
+                 gap: .15rem 1rem; align-items: start;}
+.st-key-ci_grid > div {width: auto !important; min-width: 0;}
+.st-key-ci_grid > div:has(style) {display: none;}
+@media (max-width: 900px) { .st-key-ci_grid {grid-template-columns: repeat(2, minmax(0, 1fr));} }
+@media (max-width: 560px) { .st-key-ci_grid {grid-template-columns: 1fr;} }
+
+/* account badge in the sidebar */
+.acct {display: flex; gap: 10px; align-items: center; padding: .2rem 0 .1rem;}
+.acct-pic {width: 38px; height: 38px; flex: none; border-radius: 50%; display: grid; place-items: center;
+           background: linear-gradient(135deg, #17616a, #2aa686); color: #fff; font-weight: 700; font-size: .9rem;
+           border: 2px solid rgba(255,255,255,.18);}
+.acct-text {display: flex; flex-direction: column; min-width: 0; line-height: 1.25;}
+.acct-text b {color: var(--ink); font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.acct-text small {color: var(--ink-2); font-size: .76rem;}
 
 /* medium screens: stack the side panel under the charts; narrow: stack the two charts too */
 @media (max-width: 1180px) {
@@ -121,22 +138,29 @@ if getattr(A, "_loaded_stamp", None) not in (None, _stamp):
     R = importlib.reload(R)  # report.py uses attendance.py, so reload it after
 A._loaded_stamp = _stamp
 
-store = A.get_store()
-admin_pages = [
-    st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members"),
-    st.Page(A.page_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports"),
-    st.Page(A.page_sql, title="SQL", icon=":material/database:", url_path="sql"),
-]
-pg = st.navigation({
-    "Attendance": [
-        st.Page(A.page_dashboard, title="Dashboard", icon=":material/space_dashboard:", url_path="dashboard",
-                default=True),
-        st.Page(A.page_followup, title="Follow-up & Check-in", icon=":material/how_to_reg:", url_path="followup"),
-        st.Page(A.page_live, title="Live", icon=":material/sensors:", url_path="live"),
-        st.Page(A.page_insights, title="Insights", icon=":material/insights:", url_path="insights"),
-    ],
-    # Admin pages only appear for people signed in with the admin password (see A.role)
-    **({"Admin": admin_pages} if A.is_admin(store) else {}),
-})
-A.account_box(store)
-pg.run()
+store = A.base_store()
+who = A.role(store)
+overview = st.Page(A.page_overview, title="All churches", icon=":material/public:", url_path="overview",
+                   default=who == "bishop")
+if who == "bishop":  # the Bishop sees numbers for every church and nothing else
+    pages = {"Overview": [overview]}
+else:
+    pages = {
+        "Attendance": [
+            st.Page(A.page_dashboard, title="Dashboard", icon=":material/space_dashboard:", url_path="dashboard",
+                    default=True),
+            st.Page(A.page_followup, title="Follow-up & Check-in", icon=":material/how_to_reg:", url_path="followup"),
+            st.Page(A.page_live, title="Live", icon=":material/sensors:", url_path="live"),
+            st.Page(A.page_insights, title="Insights", icon=":material/insights:", url_path="insights"),
+        ]}
+    if who == "admin":  # Admin pages only appear for people signed in with the admin password (see A.role)
+        pages["Admin"] = [
+            overview,
+            st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members"),
+            st.Page(A.page_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports"),
+            st.Page(A.page_sql, title="SQL", icon=":material/database:", url_path="sql"),
+        ]
+    elif who == "lead":  # a church's own admin: their Members page, nothing from other churches
+        pages["Admin"] = [st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members")]
+A.account_box(store)  # before the pages run, so the church an admin picks applies straight away
+st.navigation(pages).run()
