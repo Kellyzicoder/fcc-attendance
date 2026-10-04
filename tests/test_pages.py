@@ -1,6 +1,10 @@
 """Opens every page of the app with demo data and fails if any of them shows an error."""
+from pathlib import Path
+
 import pytest
 from streamlit.testing.v1 import AppTest
+
+APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
 PAGES = ["page_dashboard", "page_followup", "page_live", "page_insights", "page_members", "page_reports", "page_sql"]
 
@@ -11,7 +15,7 @@ def _page(name):
 
 
 def test_app_starts():
-    at = AppTest.from_file("app.py", default_timeout=120).run()
+    at = AppTest.from_file(APP, default_timeout=120).run()
     assert not at.exception, [e.value for e in at.exception]
 
 
