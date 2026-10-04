@@ -662,16 +662,18 @@ def church_of(m: dict) -> str:
     return (m.get("church") or "").strip() or home_church()
 
 
-def church_passwords() -> dict[str, str]:
-    """Branch sign-ins from Secrets:  [church_passwords]  Sydney = "…"  Melbourne = "…"."""
+def church_passwords(table: str = "church_passwords") -> dict[str, str]:
+    """Branch sign-ins from Secrets:  [church_passwords]  Sydney = "…"  (ushers), and the same shape under
+    [church_admin_passwords] for each church's pastor and follow-up leads."""
     try:
-        return {str(k): str(v) for k, v in dict(st.secrets.get("church_passwords") or {}).items() if v}
+        return {str(k): str(v) for k, v in dict(st.secrets.get(table) or {}).items() if v}
     except Exception:
         return {}
 
 
 def all_churches(base) -> list[str]:
-    names = {home_church(), *church_passwords(), *(church_of(m) for m in base.list_members())}
+    names = {home_church(), *church_passwords(), *church_passwords("church_admin_passwords"),
+             *(church_of(m) for m in base.list_members())}
     return [home_church()] + sorted(names - {home_church()}, key=str.lower)
 
 
@@ -817,7 +819,7 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
                          attended=attended, eligible=len(mine), phone=m.get("phone", ""), group=m.get("group", ""),
                          type=m.get("type", "member"), invited_by=m.get("invited_by", ""),
                          follow_up=m.get("follow_up", ""), pastor=m.get("pastor", "") or "", archived=archived,
-                         since=ref, flag=level if level != "ok" else ("orange" if streak else "ok"),
+                         since=ref, church=church_of(m), flag=level if level != "ok" else ("orange" if streak else "ok"),
                          age="Child" if is_child(m) else "Adult"))
     df = pd.DataFrame(rows)
     if df.empty:
@@ -936,22 +938,25 @@ def _secret(name: str) -> str:
         return ""
 
 
-ROLE_LABEL = {"admin": "Admin", "bishop": "Bishop", "team": "Team"}
+ROLE_LABEL = {"admin": "Admin", "bishop": "Bishop", "lead": "Church admin", "team": "Team"}
+DEMO_ROLES = {"Admin": "admin", "Bishop": "bishop", "Church admin": "lead", "Branch team": "team"}
 
 
 def role(store) -> str:
-    """'admin', 'bishop', 'team' or '' (not signed in).
+    """'admin', 'bishop', 'lead', 'team' or '' (not signed in).
 
     Passwords in Secrets:
-      admin_password        every church, with names, and the Admin pages
-      bishop_password       the all-churches overview only: numbers, never names
-      [church_passwords]    one per branch (Sydney = "…"): that church only
+      admin_password            HQ admin: every church, with names, and all the Admin pages
+      bishop_password           the all-churches overview only: numbers, never names
+      [church_admin_passwords]  one per church (Sydney = "…"): the pastor and follow-up leads of that church;
+                                their own church only, including its Members page
+      [church_passwords]        one per branch (Sydney = "…"): that church's ushers; no Members page
       attendance_password   the home church's team
     Without admin_password the home team password opens everything, as before. In the demo (no database)
     there are no passwords: the sidebar lets you preview each kind of sign-in.
     """
     if store.demo:
-        return {"Admin": "admin", "Bishop": "bishop", "Branch team": "team"}.get(st.session_state.get("demo_as"), "admin")
+        return DEMO_ROLES.get(st.session_state.get("demo_as"), "admin")
     r = st.session_state.get("role", "")
     if r == "team" and not _secret("admin_password") and st.session_state.get("church", home_church()) == home_church():
         return "admin"
@@ -959,17 +964,24 @@ def role(store) -> str:
 
 
 def is_admin(store) -> bool:
+    """HQ admin: every church."""
     return role(store) == "admin"
 
 
-def gate(store, admin: bool = False) -> bool:
-    """Sign-in check at the top of every page. admin=True also requires the admin password."""
+def can_manage(store) -> bool:
+    """HQ admin, or the admin of the church being looked at."""
+    return role(store) in ("admin", "lead")
+
+
+def gate(store, admin: bool = False, hq: bool = False) -> bool:
+    """Sign-in check at the top of every page. admin=True needs a church admin or HQ admin; hq=True needs HQ."""
     r = role(store)
+    allowed = ("admin",) if hq else ("admin", "lead") if admin else ("admin", "lead", "team")
     if r == "bishop":
         st.warning("The Bishop's sign-in shows the all-churches overview only.", icon=":material/lock:")
         return False
     if store.demo:
-        if admin and r != "admin":
+        if r not in allowed:
             st.warning("This page is for admins.", icon=":material/lock:")
             return False
         return True
@@ -977,9 +989,9 @@ def gate(store, admin: bool = False) -> bool:
     if not team_pw:
         st.error("Set `attendance_password` in the app's Secrets before real member data can be shown.")
         return False
-    if r == "admin" or (r == "team" and not admin):
+    if r in allowed:
         return True
-    if r == "team":
+    if r:
         st.warning("This page is for admins. Sign out and sign in with the admin password to use it.",
                    icon=":material/lock:")
         return False
@@ -997,6 +1009,8 @@ def sign_in_form():
                 found = ("admin", home_church())
             elif bishop_pw and entered == bishop_pw:
                 found = ("bishop", "")
+            elif entered and entered in church_passwords("church_admin_passwords").values():
+                found = ("lead", next(c for c, p in church_passwords("church_admin_passwords").items() if p == entered))
             elif entered and entered in church_passwords().values():
                 found = ("team", next(c for c, p in church_passwords().items() if p == entered))
             elif team_pw and entered == team_pw:
@@ -1022,7 +1036,7 @@ def account_box(store):
         return
     with st.sidebar:
         if base.demo:
-            st.selectbox("Preview as", ["Admin", "Bishop", "Branch team"], key="demo_as",
+            st.selectbox("Preview as", list(DEMO_ROLES), key="demo_as",
                          help="The demo has no passwords, so you can try each kind of sign-in here.")
             r = role(base)
         name = " ".join(str(st.session_state.get("by_name", "")).split())
@@ -1030,7 +1044,7 @@ def account_box(store):
         where = "All churches · numbers only" if r == "bishop" else current_church(base)
         st.html(f'<div class="acct"><span class="acct-pic">{_esc(initials)}</span><span class="acct-text">'
                 f'<b>{_esc(name or ROLE_LABEL[r])}</b><small>{ROLE_LABEL[r]} · {_esc(where)}</small></span></div>')
-        if r == "admin" or (base.demo and r == "team"):
+        if r == "admin" or (base.demo and r != "bishop"):
             try:
                 names = all_churches(base)
             except DbUnavailable:
@@ -1125,7 +1139,7 @@ def checkin_panel(store):
     with st.container(key="live_ci"):  # refreshes quietly (see app.py CSS)
         live_list()
 
-    if is_admin(store):
+    if can_manage(store):
         with st.expander("Untick everyone for this service", icon=":material/remove_done:"):
             n_now = len((store.get_service(date) or {}).get("present") or {})
             st.caption(f"Removes all {n_now} tick{'s' if n_now != 1 else ''} for **{day:%A %d %B %Y}** in one go. "
@@ -1512,7 +1526,14 @@ def person_panel(store):
                                icon=":material/download:")
 
 
-PASTOR_GROUP_SIZE = 10  # each pastor looks after about ten people
+PASTOR_GROUP_SIZE = 10  # default number of people per pastor / shepherd; admins can change it on the Pastors tab
+
+
+def group_size(store) -> int:
+    try:
+        return max(1, int(store.get_setting(f"pastor_group_size:{getattr(store, 'church', '')}", "") or PASTOR_GROUP_SIZE))
+    except ValueError:
+        return PASTOR_GROUP_SIZE
 
 
 def pastors_panel(store):
@@ -1528,14 +1549,22 @@ def pastors_panel(store):
     named = df[df.pastor != ""]
     if named.empty:
         st.info("No one has a pastor yet. An admin can type a pastor's name in the **Pastor** column under "
-                "**Members → Register** (about ten people each), and their lists appear here.",
+                "**Members → Register**, and their lists appear here.",
                 icon=":material/diversity_3:")
         return
     summary = (named.groupby("pastor").agg(People=("id", "count"), here=("here", "sum"),
                                            Red=("level", lambda c: int((c == "red").sum())),
                                            Yellow=("level", lambda c: int((c == "yellow").sum()))).reset_index())
     summary = summary.rename(columns={"pastor": "Pastor", "here": "Came this service"})
-    summary["People"] = summary.People.map(lambda n: f"{n} of {PASTOR_GROUP_SIZE}" + (" ⚠️" if n > PASTOR_GROUP_SIZE else ""))
+    size = group_size(store)
+    if can_manage(store):
+        new = st.number_input("People per pastor or shepherd", min_value=1, max_value=200, value=size, step=1,
+                              key="pastor_size", help="How many people each pastor, shepherd or leader looks after. "
+                                                      "A ⚠️ shows next to anyone who has more than this.")
+        if int(new) != size:
+            store.set_setting(f"pastor_group_size:{getattr(store, 'church', '')}", str(int(new)))
+            size = int(new)
+    summary["People"] = summary.People.map(lambda n: f"{n} of {size}" + (" ⚠️" if n > size else ""))
     with card("pastor_all"):
         st.markdown(f"**All pastors** · {len(summary)} pastors · {len(named)} people assigned · "
                     f"{len(df) - len(named)} not assigned yet")
@@ -1637,7 +1666,8 @@ def followup_table(view: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({
         "Status": view.flag.map(LEVEL_LABEL), "Name": view.name, "Missed in a row": view.missed,
         "Last seen": pd.to_datetime(view.last_seen, errors="coerce").dt.strftime("%d %b %Y").fillna("Not yet"),
-        "Attendance": view.rate, "Phone": view.phone, "Pastor": view.pastor, "Adult / Child": view.age,
+        "Attendance": view.rate, "Phone": view.phone, "Church": view.church, "Pastor": view.pastor,
+        "Adult / Child": view.age,
         "Group": view.group,
         "Type": view.type.map({"member": "Member", "first_timer": "First-timer"}).fillna(view.type),
         "Invited by": view.invited_by})
@@ -1718,17 +1748,36 @@ def _as_date(v) -> str:
     return "" if pd.isna(d) else d.strftime("%d/%m/%Y")
 
 
+def all_churches_xlsx(base) -> bytes:
+    """Everyone on every register as one Excel file: an "Everyone" sheet with a Church column, then a sheet per church."""
+    import io
+    rows = [{"Church": church_of(m), "Name": m.get("full_name", ""), "Type": "First-timer" if m.get("type") == "first_timer" else "Member",
+             "Adult / Child": "Child" if is_child(m) else "Adult", "Phone": m.get("phone", ""), "Email": m.get("email", ""),
+             "Pastor": m.get("pastor", ""), "Group": m.get("group", ""), "Status": m.get("status", "") or "Active",
+             "Joined": fmt_date(m.get("date_joined"), "%d/%m/%Y", "")} for m in base.list_members()]
+    df = pd.DataFrame(rows).sort_values(["Church", "Name"], key=lambda c: c.str.lower())
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as xl:
+        df.to_excel(xl, index=False, sheet_name="Everyone")
+        for c in all_churches(base):
+            df[df.Church == c].drop(columns=["Church"]).to_excel(xl, index=False, sheet_name=c[:31])
+    return buf.getvalue()
+
+
 def register_editor(store):
     """Editable register: click a cell, type, then Save. Rows are never deleted here — set Status instead."""
     m = pd.DataFrame(store.list_members())
     if m.empty:
         st.info("No members yet — use **Import CSV** to load your register.")
         return
-    for c in EDIT_COLS:
+    hq = is_admin(store)
+    cols = EDIT_COLS + (["church"] if hq else [])  # HQ can move someone to another church
+    for c in cols:
         if c not in m.columns:
             m[c] = ""
+    m["church"] = m.apply(church_of, axis=1)
     versions_now = dict(zip(m["id"], m["version"])) if "version" in m.columns else {}
-    m = m.set_index("id")[EDIT_COLS].fillna("")
+    m = m.set_index("id")[cols].fillna("")
     for c in ("date_joined",):
         m[c] = m[c].map(_as_date)
     m["status"] = m["status"].map(lambda v: v or "Active")  # blank status means active
@@ -1756,6 +1805,8 @@ def register_editor(store):
             "phone": st.column_config.TextColumn("Phone", max_chars=30),
             "email": st.column_config.TextColumn("Email", max_chars=120),
             "group": st.column_config.TextColumn("Group"),
+            "church": st.column_config.SelectboxColumn("Church", options=all_churches(base_store()), required=True,
+                                                       help="Change this to move someone to another church"),
             "pastor": st.column_config.TextColumn("Pastor", help="The pastor who looks after this person", max_chars=60),
             "role": st.column_config.TextColumn("Ministry / role"),
             "status": st.column_config.SelectboxColumn("Status", options=STATUSES + extra),
@@ -1766,7 +1817,7 @@ def register_editor(store):
     changes, bad_dates = {}, []
     for mid in edited.index:
         diff = {}
-        for c in EDIT_COLS:
+        for c in cols:
             old, new = view.at[mid, c], edited.at[mid, c]
             old = "" if old is None or (not isinstance(old, str) and pd.isna(old)) else str(old).strip()
             new = "" if new is None or (not isinstance(new, str) and pd.isna(new)) else str(new).strip()
@@ -1824,6 +1875,11 @@ def page_members():
 
     with tab_list:
         register_editor(store)
+        if is_admin(store):
+            st.download_button("Download every church's register (Excel, one sheet per church)",
+                               all_churches_xlsx(base_store()), f"fcc_registers_{today().isoformat()}.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               icon=":material/table_view:")
 
     with tab_signups:
         signups(store)
@@ -2191,7 +2247,7 @@ def page_reports():
     import report as R
     store = get_store()
     header("Reports", "The 5pm email to church leaders — who gets it, what's in it, and send it now", store)
-    if not gate(store, admin=True):
+    if not gate(store, hq=True):
         return
     demo_note(store)
     cfg = _mail_cfg()
@@ -2360,7 +2416,7 @@ ORDER BY first_timers DESC""",
 def page_sql():
     store = get_store()
     header("SQL", "Ask the database anything — read-only, so nothing can be changed from here", store)
-    if not gate(store, admin=True):
+    if not gate(store, hq=True):
         return
     demo_note(store)
     mode, _ = layout_prefs()

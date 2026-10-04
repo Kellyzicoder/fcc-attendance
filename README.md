@@ -23,8 +23,15 @@ missing and follow up.
 |---|---|---|
 | `admin_password` | Admin | Every church with names (pick the church in the sidebar), the **All churches** overview, Members, Reports and SQL |
 | `bishop_password` | Bishop | The **All churches** overview only: numbers for every branch, never names or phone numbers |
+| `[church_admin_passwords]` (one line per church, e.g. `Sydney = "…"`) | A church's admin: its pastor and follow-up leads | Their own church only, including its Members page (register, add people, activity). No other church, no Reports or SQL |
 | `[church_passwords]` (one line per branch, e.g. `Sydney = "…"`) | A branch's team | Their own church only |
 | `attendance_password` | The home church's team | The home church only (`home_church`, default Auckland) |
+
+**Adding a church.** Add a line with the church's name under `[church_admin_passwords]` (and `[church_passwords]`
+for its ushers) in Secrets. It then appears in the HQ admin's sidebar and in the All churches overview. People added
+or imported while that church is selected belong to it; HQ can also move someone with the **Church** column in
+Members → Register. Every download carries a Church column, and HQ can download every register as one Excel file
+with a sheet per church.
 
 Each person belongs to one church (people added before branches existed belong to the home church). A branch's
 lists, ticks, follow-up colours and untick-all only ever touch that branch. The sidebar shows an account badge
