@@ -10,7 +10,7 @@ missing and follow up.
 | Page | What it does |
 |---|---|
 | Dashboard (home) | KPI tiles (last service, 4-service average, who needs a call, first-timers this month), where everyone stands (donut), people present over time, needs-follow-up list, and a side panel with notifications, latest check-ins and who to call next. Refreshes every 30 s. |
-| Follow-up & Check-in | **Needs follow-up**: 🟡 yellow = 3–4 services missed in a row, 🔴 red = 5+; filter by pastor; CSV download. **Check-in**: ushers tick people as they arrive, ticks sync to every phone within ~3 s; admins can untick everyone for a service in one step. **One person**: pick someone and see every day they came. **Pastors**: each pastor's list of about ten people, who came, who to call, and a WhatsApp message to copy. **Archive**: people not seen for two years. |
+| Follow-up & Check-in | **Needs follow-up**: 🟠 orange = missed the last service, 🟡 yellow = 3–4 services missed in a row, 🔴 red = 5+; filter by pastor; download any list as CSV or Excel. **Check-in**: ushers tick people as they arrive, ticks sync to every phone within ~3 s; new people can be added as a first-timer or a member, adult or child; admins can untick everyone for a service in one step. **One person**: pick someone and see every day they came. **Pastors**: each pastor's list of about ten people, who came, who to call, and a WhatsApp message to copy. **Archive**: people not seen for two years. |
 | Live | Real-time view of today's check-ins — count, first-timers, arrivals over time, latest arrivals. Refreshes itself; good on a screen during service. |
 | Insights | Attendance per service (members vs first-timers, 4-service average), first-timers per month, first-timer return rate, attendance by group. |
 | Members | The register (editable), sign-ups from the welcome form to approve, add people, import the Google Sheets CSV exports, and an **Activity** log of every change. |
@@ -42,6 +42,9 @@ table and the `members.version` column itself; there is no SQL to run.
 **Taking someone off the red list.** Tick them in when they come (it clears itself), or set their Status in
 Members → Register to **Away** (travelling, unwell) or Moved/Inactive. People not seen for two years move to the
 Archive on their own and return the day they are ticked in again.
+
+**Adults and kids.** Each person is an Adult or a Child (Members → Register, *Adult / Child* column; blank means
+adult). The dashboard, check-in and WhatsApp summary show adults, kids and the overall total.
 
 **WhatsApp summary.** Dashboard → *Summary for WhatsApp* gives this week's numbers as text to copy and paste;
 names are left out unless you tick *Include names*.
