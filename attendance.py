@@ -829,7 +829,7 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
 
 
 LEVEL_LABEL = {"red": f"🔴 Red · {RED_AT}+ missed", "yellow": f"🟡 Yellow · {YELLOW_AT}–{RED_AT - 1} missed",
-               "orange": "🟠 Orange · missed last service", "ok": "🟢 On track"}
+               "orange": "🟠 Orange · missed this service", "ok": "🟢 On track"}
 TINT = {"Red": "rgba(208,59,59,.20)", "Yellow": "rgba(250,178,25,.25)", "Orange": "rgba(240,120,42,.22)"}
 
 
@@ -1111,16 +1111,16 @@ def checkin_panel(store):
         k[4].metric("First-timers", f"{sum(1 for m in members if m['id'] in present and m.get('type') == 'first_timer')}",
                     border=True)
         with card("ci_list"):
-            st.caption(f"Live · ticks from other phones appear within a few seconds · showing {len(shown)} of {len(listed)}")
-            cols = st.columns(per_row)
-            per_col = -(-len(shown) // per_row) or 1  # A to Z down each column, so it stays in order on a phone
-            for i, m in enumerate(shown):
-                key = f"ci_{date}_{m['id']}"
-                st.session_state[key] = m["id"] in present  # sync ticks made on other devices
-                tag = " · first-timer" if m.get("type") == "first_timer" else ""
-                tag += " · child" if is_child(m) else ""
-                tag += " · archive" if m["id"] in archived else ""
-                cols[i // per_col].checkbox(f"{m['full_name']}{tag}", key=key, on_change=on_tick, args=(m["id"],))
+            st.caption(f"Live · ticks from other phones appear within a few seconds · showing {len(shown)} of {len(listed)} · A to Z")
+            st.html(f"<style>.st-key-ci_grid {{--ci-cols: {per_row};}}</style>")
+            with st.container(key="ci_grid"):  # CSS grid (see app.py): A to Z across, one column on a phone
+                for m in shown:
+                    key = f"ci_{date}_{m['id']}"
+                    st.session_state[key] = m["id"] in present  # sync ticks made on other devices
+                    tag = " · first-timer" if m.get("type") == "first_timer" else ""
+                    tag += " · child" if is_child(m) else ""
+                    tag += " · archive" if m["id"] in archived else ""
+                    st.checkbox(f"{m['full_name']}{tag}", key=key, on_change=on_tick, args=(m["id"],))
 
     with st.container(key="live_ci"):  # refreshes quietly (see app.py CSS)
         live_list()
@@ -1253,14 +1253,14 @@ def page_dashboard():
         last_day = dt.date.fromisoformat(last["date"])
 
         st.html(kpi_row([
-            dict(icon="👥", label=f"Last service · {last_day:%d %b}", value=n_last,
+            dict(icon="👥", label=f"This service · {last_day:%d %b}", value=n_last,
                  foot=f'<span class="kpi-sub">{_esc(last.get("name") or "Service")} · people present</span>'),
             dict(icon="🧒", label=f"Adults and kids · {last_day:%d %b}", value=f"{adults} + {kids}",
                  foot=f'<span class="kpi-sub">{adults} adult{"s" if adults != 1 else ""} · {kids} '
                       f'kid{"s" if kids != 1 else ""} · {n_last} overall</span>'),
             dict(icon="🔔", label="Need a follow-up call", value=red + yellow,
                  foot=f'<span class="pill red">● {red} red</span> <span class="pill amber">● {yellow} yellow</span> '
-                      f'<span class="pill orange">● {orange} missed last</span>'),
+                      f'<span class="pill orange">● {orange} missed this service</span>'),
             dict(icon="✨", label=f"First-timers · {today():%B}", value=len(ft_month),
                  foot=(f'<span class="pill blue">{pending} sign-up{"s" if pending != 1 else ""} to approve</span>'
                        if pending else '<span class="kpi-sub">no sign-ups waiting</span>')),
@@ -1271,7 +1271,7 @@ def page_dashboard():
             a, b = st.container(key="dash_charts").columns([1, 1.35], gap="medium")
             with a:  # donut: where everyone on the register stands
                 fig = go.Figure(go.Pie(
-                    labels=["On track", "Missed last service", "Yellow", "Red"], values=[ok, orange, yellow, red],
+                    labels=["On track", "Missed this service", "Yellow", "Red"], values=[ok, orange, yellow, red],
                     hole=0.72, sort=False,
                     marker=dict(colors=[STATUS["ok"], STATUS["orange"], STATUS["yellow"], STATUS["red"]],
                                 line=dict(color="#141c22", width=2)),
@@ -1412,7 +1412,7 @@ def page_overview():
     table = pd.DataFrame([{"Church": r["church"], "Latest service": fmt_date(r["date"], "%a %d %b", "None yet"),
                            "Present": r["present"], "Change": r["change"], "Adults": r["adults"], "Kids": r["kids"],
                            "First-timers": r["first"], "On the register": r["register"], "🔴 Red": r["red"],
-                           "🟡 Yellow": r["yellow"], "🟠 Missed last": r["orange"],
+                           "🟡 Yellow": r["yellow"], "🟠 Missed this service": r["orange"],
                            "Last 12 services": r["trend"]} for r in rows])
     with card("ov_table"):
         st.markdown(f"**Church by church** · {len(rows)} churches")
@@ -1534,7 +1534,7 @@ def pastors_panel(store):
     summary = (named.groupby("pastor").agg(People=("id", "count"), here=("here", "sum"),
                                            Red=("level", lambda c: int((c == "red").sum())),
                                            Yellow=("level", lambda c: int((c == "yellow").sum()))).reset_index())
-    summary = summary.rename(columns={"pastor": "Pastor", "here": "Came last service"})
+    summary = summary.rename(columns={"pastor": "Pastor", "here": "Came this service"})
     summary["People"] = summary.People.map(lambda n: f"{n} of {PASTOR_GROUP_SIZE}" + (" ⚠️" if n > PASTOR_GROUP_SIZE else ""))
     with card("pastor_all"):
         st.markdown(f"**All pastors** · {len(summary)} pastors · {len(named)} people assigned · "
@@ -1543,7 +1543,7 @@ def pastors_panel(store):
     who = st.selectbox("Pastor", sorted(named.pastor.unique(), key=str.lower) + ["Not assigned yet"], key="pastor_pick")
     mine = df[df.pastor == ""] if who == "Not assigned yet" else df[df.pastor == who]
     table = pd.DataFrame({"Status": mine.flag.map(LEVEL_LABEL), "Name": mine.name,
-                          "Last service": mine.here.map({True: "✅ Came", False: "—"}),
+                          "This service": mine.here.map({True: "✅ Came", False: "—"}),
                           "Missed in a row": mine.missed,
                           "Last seen": mine.last_seen.map(lambda v: fmt_date(v, "%d %b %Y")), "Phone": mine.phone})
     with card("pastor_one"):
@@ -1644,7 +1644,7 @@ def followup_table(view: pd.DataFrame) -> pd.DataFrame:
 
 
 def followup_panel(store):
-    show = st.segmented_control("Show", ["Needs follow-up", "Red only", "Yellow only", "Missed last service", "Everyone"],
+    show = st.segmented_control("Show", ["Needs follow-up", "Red only", "Yellow only", "Missed this service", "Everyone"],
                                 default="Needs follow-up", key="fu_show") or "Needs follow-up"
     pastors = sorted({(m.get("pastor") or "").strip() for m in store.list_members()} - {""}, key=str.lower)
     pastor = st.selectbox("Pastor", ["All pastors"] + pastors, key="fu_pastor") if pastors else "All pastors"
@@ -1663,14 +1663,14 @@ def followup_panel(store):
         k = st.columns(5)
         k[0].metric("🔴 Red", red, f"{RED_AT}+ in a row", delta_color="off", border=True)
         k[1].metric("🟡 Yellow", yellow, f"{YELLOW_AT}–{RED_AT - 1} in a row", delta_color="off", border=True)
-        k[2].metric("🟠 Orange", orange, "missed last service", delta_color="off", border=True)
+        k[2].metric("🟠 Orange", orange, "missed this service", delta_color="off", border=True)
         k[3].metric("🟢 On track", int((df.flag == "ok").sum()), border=True)
         last = past[-1]
-        k[4].metric("Last service", f"{len(last.get('present') or {})} present",
+        k[4].metric("This service", f"{len(last.get('present') or {})} present",
                     dt.date.fromisoformat(last["date"]).strftime("%a %d %b"), delta_color="off", border=True)
 
         view = {"Needs follow-up": df[df.level != "ok"], "Red only": df[df.level == "red"],
-                "Yellow only": df[df.level == "yellow"], "Missed last service": df[df.missed >= 1],
+                "Yellow only": df[df.level == "yellow"], "Missed this service": df[df.missed >= 1],
                 "Everyone": df}[show]
         if pastor != "All pastors":
             view = view[view.pastor.str.strip() == pastor]
@@ -1707,7 +1707,7 @@ def followup_panel(store):
         live_followup()
 
 
-EDIT_COLS = ["full_name", "type", "age_group", "phone", "email", "group", "pastor", "role", "status", "date_joined", "first_visit",
+EDIT_COLS = ["full_name", "type", "age_group", "phone", "email", "group", "pastor", "role", "status", "date_joined",
              "invited_by", "follow_up"]
 STATUSES = ["Active", "Away", "Inactive", "Moved", "Left", "Transferred", "Deceased"]
 
@@ -1729,7 +1729,7 @@ def register_editor(store):
             m[c] = ""
     versions_now = dict(zip(m["id"], m["version"])) if "version" in m.columns else {}
     m = m.set_index("id")[EDIT_COLS].fillna("")
-    for c in ("date_joined", "first_visit"):
+    for c in ("date_joined",):
         m[c] = m[c].map(_as_date)
     m["status"] = m["status"].map(lambda v: v or "Active")  # blank status means active
     m["age_group"] = m.apply(lambda r: "Child" if is_child(r) else "Adult", axis=1)  # blank means adult
@@ -1760,7 +1760,6 @@ def register_editor(store):
             "role": st.column_config.TextColumn("Ministry / role"),
             "status": st.column_config.SelectboxColumn("Status", options=STATUSES + extra),
             "date_joined": st.column_config.TextColumn("Joined", help="DD/MM/YYYY", max_chars=10),
-            "first_visit": st.column_config.TextColumn("First visit", help="DD/MM/YYYY", max_chars=10),
             "invited_by": st.column_config.TextColumn("Invited by"),
             "follow_up": st.column_config.TextColumn("Follow-up notes"),
         })
@@ -2014,7 +2013,7 @@ def page_live():
                     delta_color="off", border=True)
         k[2].metric("Of the register", f"{len(present) / max(len(active), 1):.0%}", f"{len(active)} people",
                     delta_color="off", border=True)
-        k[3].metric("Last service", prev_n if prev else "–",
+        k[3].metric("Previous service", prev_n if prev else "–",
                     dt.date.fromisoformat(prev["date"]).strftime("%a %d %b") if prev else None,
                     delta_color="off", border=True)
 
@@ -2078,7 +2077,7 @@ def page_insights():
 
     k = st.columns(4)
     k[0].metric("Services recorded", len(per), border=True)
-    k[1].metric("Last service", int(last.present),
+    k[1].metric("This service", int(last.present),
                 f"{int(last.present - prev.present):+d} vs previous" if prev is not None else None, border=True)
     k[2].metric("Average (last 4)", f"{per.present.tail(4).mean():.0f}", border=True)
     k[3].metric("Active people", len(recent_ids), "came at least once in the last 4 services",

@@ -94,6 +94,14 @@ div[class*="st-key-card_"] {background: var(--card); border: 1px solid var(--car
 .feed-empty {color: var(--ink-3);}
 .dash-table td:nth-child(2), .dash-table td:nth-child(3), .dash-table td:nth-child(4) {white-space: nowrap;}
 
+/* check-in names: a grid that reads A to Z across; fewer columns on small screens, one on a phone */
+.st-key-ci_grid {display: grid !important; grid-template-columns: repeat(var(--ci-cols, 3), minmax(0, 1fr));
+                 gap: .15rem 1rem; align-items: start;}
+.st-key-ci_grid > div {width: auto !important; min-width: 0;}
+.st-key-ci_grid > div:has(style) {display: none;}
+@media (max-width: 900px) { .st-key-ci_grid {grid-template-columns: repeat(2, minmax(0, 1fr));} }
+@media (max-width: 560px) { .st-key-ci_grid {grid-template-columns: 1fr;} }
+
 /* account badge in the sidebar */
 .acct {display: flex; gap: 10px; align-items: center; padding: .2rem 0 .1rem;}
 .acct-pic {width: 38px; height: 38px; flex: none; border-radius: 50%; display: grid; place-items: center;
