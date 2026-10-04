@@ -94,6 +94,15 @@ div[class*="st-key-card_"] {background: var(--card); border: 1px solid var(--car
 .feed-empty {color: var(--ink-3);}
 .dash-table td:nth-child(2), .dash-table td:nth-child(3), .dash-table td:nth-child(4) {white-space: nowrap;}
 
+/* account badge in the sidebar */
+.acct {display: flex; gap: 10px; align-items: center; padding: .2rem 0 .1rem;}
+.acct-pic {width: 38px; height: 38px; flex: none; border-radius: 50%; display: grid; place-items: center;
+           background: linear-gradient(135deg, #17616a, #2aa686); color: #fff; font-weight: 700; font-size: .9rem;
+           border: 2px solid rgba(255,255,255,.18);}
+.acct-text {display: flex; flex-direction: column; min-width: 0; line-height: 1.25;}
+.acct-text b {color: var(--ink); font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.acct-text small {color: var(--ink-2); font-size: .76rem;}
+
 /* medium screens: stack the side panel under the charts; narrow: stack the two charts too */
 @media (max-width: 1180px) {
   [data-testid="stHorizontalBlock"]:has(.st-key-dash_charts) {flex-direction: column;}
@@ -121,22 +130,27 @@ if getattr(A, "_loaded_stamp", None) not in (None, _stamp):
     R = importlib.reload(R)  # report.py uses attendance.py, so reload it after
 A._loaded_stamp = _stamp
 
-store = A.get_store()
-admin_pages = [
-    st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members"),
-    st.Page(A.page_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports"),
-    st.Page(A.page_sql, title="SQL", icon=":material/database:", url_path="sql"),
-]
-pg = st.navigation({
-    "Attendance": [
-        st.Page(A.page_dashboard, title="Dashboard", icon=":material/space_dashboard:", url_path="dashboard",
-                default=True),
-        st.Page(A.page_followup, title="Follow-up & Check-in", icon=":material/how_to_reg:", url_path="followup"),
-        st.Page(A.page_live, title="Live", icon=":material/sensors:", url_path="live"),
-        st.Page(A.page_insights, title="Insights", icon=":material/insights:", url_path="insights"),
-    ],
-    # Admin pages only appear for people signed in with the admin password (see A.role)
-    **({"Admin": admin_pages} if A.is_admin(store) else {}),
-})
-A.account_box(store)
-pg.run()
+store = A.base_store()
+who = A.role(store)
+overview = st.Page(A.page_overview, title="All churches", icon=":material/public:", url_path="overview",
+                   default=who == "bishop")
+if who == "bishop":  # the Bishop sees numbers for every church and nothing else
+    pages = {"Overview": [overview]}
+else:
+    pages = {
+        "Attendance": [
+            st.Page(A.page_dashboard, title="Dashboard", icon=":material/space_dashboard:", url_path="dashboard",
+                    default=True),
+            st.Page(A.page_followup, title="Follow-up & Check-in", icon=":material/how_to_reg:", url_path="followup"),
+            st.Page(A.page_live, title="Live", icon=":material/sensors:", url_path="live"),
+            st.Page(A.page_insights, title="Insights", icon=":material/insights:", url_path="insights"),
+        ]}
+    if who == "admin":  # Admin pages only appear for people signed in with the admin password (see A.role)
+        pages["Admin"] = [
+            overview,
+            st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members"),
+            st.Page(A.page_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports"),
+            st.Page(A.page_sql, title="SQL", icon=":material/database:", url_path="sql"),
+        ]
+A.account_box(store)  # before the pages run, so the church an admin picks applies straight away
+st.navigation(pages).run()
