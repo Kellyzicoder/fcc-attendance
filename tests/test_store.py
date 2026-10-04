@@ -121,3 +121,31 @@ def test_daily_report_builds(store):
     import report as R
     r = R.build(store, dt.date.today())
     assert r["subject"] and "<html" in r["html"].lower() and len(r["xlsx"]) > 1000
+
+
+def test_orange_marks_people_who_missed_the_latest_service_only(store):
+    df = A.missed_streaks(store.list_members(), store.list_services())
+    assert set(df[df.flag == "orange"].missed) <= {1, 2}
+    assert (df[df.flag == "orange"].level == "ok").all()  # orange is an early warning, not yet a follow-up call
+    assert (df[df.missed == 0].flag == "ok").all()
+    assert (df[df.level != "ok"].flag == df[df.level != "ok"].level).all()  # yellow and red are unchanged
+
+
+def test_adults_and_kids_are_counted_separately(store):
+    members = store.list_members()
+    mem = {m["id"]: m for m in members}
+    kids = [m["id"] for m in members if A.is_child(m)]
+    assert kids and len(kids) < len(members)
+    assert A.split_ages(list(mem), mem) == (len(members) - len(kids), len(kids))
+    assert A.split_ages([kids[0]], mem) == (0, 1)
+    store.update_members({kids[0]: {"age_group": "Adult"}})
+    assert not A.is_child({x["id"]: x for x in store.list_members()}[kids[0]])
+    assert "Adults:" in A.whatsapp_summary(store) and "Average" not in A.whatsapp_summary(store)
+
+
+def test_follow_up_download_has_the_people_who_need_a_call(store):
+    df = A.missed_streaks(store.list_members(), store.list_services())
+    need = df[df.level != "ok"]
+    table = A.followup_table(need)
+    assert list(table.Name) == list(need.name) and {"Status", "Phone", "Pastor", "Adult / Child"} <= set(table.columns)
+    assert len(A._xlsx(table, "Needs follow-up")) > 1000
