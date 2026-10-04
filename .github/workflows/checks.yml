@@ -1,0 +1,25 @@
+name: Checks
+
+# Runs on every pull request (and on main after a merge). A red cross means: don't merge yet.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: App starts and the rules still work
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - name: Run the checks (demo data only, no secrets)
+        run: python -m pytest tests -q

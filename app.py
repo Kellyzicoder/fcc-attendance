@@ -17,7 +17,7 @@ if LOGO.exists():
 st.html("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-:root {--card: #141c22; --card-line: rgba(255,255,255,.07); --ink: #e8eef2; --ink-2: #9fb0bd; --ink-3: #6b7c89;
+:root {--orange: #f0782a; --card: #141c22; --card-line: rgba(255,255,255,.07); --ink: #e8eef2; --ink-2: #9fb0bd; --ink-3: #6b7c89;
        --green: #2aa686; --blue: #5a8ef0; --amber: #fab219; --red: #d03b3b; --gold: #ffcf00;}
 html, body, .stApp, .stMarkdown, [data-testid="stMetric"], [data-testid="stSidebar"] {font-family: 'Inter', system-ui, sans-serif;}
 .block-container {padding-top: 3.2rem; padding-bottom: 3rem; max-width: 1480px;}
@@ -71,7 +71,7 @@ div[class*="st-key-card_"] {background: var(--card); border: 1px solid var(--car
 .pill {display: inline-flex; align-items: center; gap: 4px; padding: .12rem .55rem; border-radius: 999px;
        font-size: .76rem; font-weight: 600; color: var(--ink); white-space: nowrap;}
 .pill.red {background: rgba(208,59,59,.22);} .pill.amber {background: rgba(250,178,25,.20);}
-.pill.blue {background: rgba(90,142,240,.22);}
+.pill.blue {background: rgba(90,142,240,.22);} .pill.orange {background: rgba(240,120,42,.24);}
 
 /* follow-up table */
 .dash-table {width: 100%; border-collapse: collapse; font-size: .88rem;}
