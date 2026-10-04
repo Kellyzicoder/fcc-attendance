@@ -1254,8 +1254,7 @@ def page_dashboard():
 
         st.html(kpi_row([
             dict(icon="👥", label=f"Last service · {last_day:%d %b}", value=n_last,
-                 foot=_delta(n_last - n_prev if n_prev is not None else None, "",
-                             f"vs {dt.date.fromisoformat(prev['date']):%d %b}" if prev else "first service")),
+                 foot=f'<span class="kpi-sub">{_esc(last.get("name") or "Service")} · people present</span>'),
             dict(icon="🧒", label=f"Adults and kids · {last_day:%d %b}", value=f"{adults} + {kids}",
                  foot=f'<span class="kpi-sub">{adults} adult{"s" if adults != 1 else ""} · {kids} '
                       f'kid{"s" if kids != 1 else ""} · {n_last} overall</span>'),
