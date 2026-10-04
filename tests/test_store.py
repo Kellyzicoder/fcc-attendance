@@ -149,3 +149,33 @@ def test_follow_up_download_has_the_people_who_need_a_call(store):
     table = A.followup_table(need)
     assert list(table.Name) == list(need.name) and {"Status", "Phone", "Pastor", "Adult / Child"} <= set(table.columns)
     assert len(A._xlsx(table, "Needs follow-up")) > 1000
+
+
+def test_each_church_only_sees_its_own_people(store):
+    names = A.all_churches(store)
+    assert names[0] == A.home_church() and {"Sydney", "Melbourne"} <= set(names)
+    views = {c: A.ChurchStore(store, c) for c in names}
+    ids = {c: {m["id"] for m in v.list_members()} for c, v in views.items()}
+    assert sum(len(i) for i in ids.values()) == len(store.list_members())  # everyone belongs to exactly one church
+    assert not ids["Sydney"] & ids[A.home_church()]
+    for c, v in views.items():
+        for s in v.list_services():
+            assert s["present"] and set(s["present"]) <= ids[c]
+    # someone added while looking at Sydney belongs to Sydney, and untick-all there leaves the others alone
+    views["Sydney"].upsert_members([dict(id="new-syd", full_name="New Sydney Person", type="member", created_at=A.now_iso())])
+    assert "new-syd" in {m["id"] for m in views["Sydney"].list_members()}
+    assert "new-syd" not in {m["id"] for m in views[A.home_church()].list_members()}
+    home_one, syd_one = next(iter(ids[A.home_church()])), next(iter(ids["Sydney"]))
+    store.set_present(FREE_DAY, home_one, True)
+    store.set_present(FREE_DAY, syd_one, True)
+    assert views["Sydney"].clear_service(FREE_DAY) == 1
+    assert home_one in store.get_service(FREE_DAY)["present"]
+
+
+def test_the_bishops_numbers_contain_no_names(store):
+    rows = A.church_numbers(store)
+    assert [r["church"] for r in rows] == A.all_churches(store)
+    assert sum(r["register"] for r in rows) <= len(store.list_members())
+    text = A.whatsapp_overview(rows) + str(rows)
+    for m in store.list_members():
+        assert m["full_name"] not in text and (not m["phone"] or m["phone"] not in text)
