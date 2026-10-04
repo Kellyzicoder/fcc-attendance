@@ -42,8 +42,8 @@ ARCHIVE_DAYS = 730  # not seen for two years → moved to the Archive list (they
 AMBER, CRIMSON = "#fab219", "#d03b3b"   # reserved status colours (always shown with icon + label)
 # Chart colours, validated for colour-blind separation and contrast on the dark surface (#141c22).
 SERIES = dict(members="#2aa686", first_timers="#5a8ef0")
-ORANGE = "#f0782a"
-STATUS = dict(ok="#2aa686", orange=ORANGE, yellow=AMBER, red=CRIMSON)
+BLUE = "#5a8ef0"  # "missed this service": information, not a warning
+STATUS = dict(ok="#2aa686", blue=BLUE, yellow=AMBER, red=CRIMSON)
 INK = dict(primary="#e8eef2", secondary="#9fb0bd", muted="#6b7c89", grid="rgba(255,255,255,0.06)")
 
 
@@ -671,6 +671,22 @@ def church_passwords(table: str = "church_passwords") -> dict[str, str]:
         return {}
 
 
+def shared_passwords() -> list[str]:
+    """Sign-ins that share a password. The password alone decides who someone is, so each must be different;
+    with a duplicate, the higher sign-in (admin, Bishop, church admin, ushers, in that order) would win."""
+    seen, clash = {}, []
+    names = ([("HQ admin", _secret("admin_password")), ("Bishop", _secret("bishop_password"))]
+             + [(f"{c} church admin", p) for c, p in church_passwords("church_admin_passwords").items()]
+             + [(f"{c} team", p) for c, p in church_passwords().items()]
+             + [(f"{home_church()} team", _secret("attendance_password"))])
+    for who, pw in names:
+        if pw and pw in seen:
+            clash.append(f"{seen[pw]} and {who}")
+        elif pw:
+            seen[pw] = who
+    return clash
+
+
 def all_churches(base) -> list[str]:
     names = {home_church(), *church_passwords(), *church_passwords("church_admin_passwords"),
              *(church_of(m) for m in base.list_members())}
@@ -786,7 +802,7 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
     """Per person: services missed in a row (most recent first), last seen, and a yellow/red flag.
 
     Only services on or after a person's start (date joined / first visit) count against them.
-    `level` is ok / yellow / red (the follow-up rule). `flag` is the same but shows "orange" for someone who is
+    `level` is ok / yellow / red (the follow-up rule). `flag` is the same but shows "blue" for someone who is
     still ok yet missed the latest service (1–2 in a row), so leaders can see it early.
     People not seen for ARCHIVE_DAYS (two years) are archived: archive="hide" leaves them out (the default, so
     follow-up lists and counts skip them), "only" returns just them, "all" returns everyone.
@@ -819,7 +835,7 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
                          attended=attended, eligible=len(mine), phone=m.get("phone", ""), group=m.get("group", ""),
                          type=m.get("type", "member"), invited_by=m.get("invited_by", ""),
                          follow_up=m.get("follow_up", ""), pastor=m.get("pastor", "") or "", archived=archived,
-                         since=ref, church=church_of(m), flag=level if level != "ok" else ("orange" if streak else "ok"),
+                         since=ref, church=church_of(m), flag=level if level != "ok" else ("blue" if streak else "ok"),
                          age="Child" if is_child(m) else "Adult"))
     df = pd.DataFrame(rows)
     if df.empty:
@@ -831,8 +847,8 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
 
 
 LEVEL_LABEL = {"red": f"🔴 Red · {RED_AT}+ missed", "yellow": f"🟡 Yellow · {YELLOW_AT}–{RED_AT - 1} missed",
-               "orange": "🟠 Orange · missed this service", "ok": "🟢 On track"}
-TINT = {"Red": "rgba(208,59,59,.20)", "Yellow": "rgba(250,178,25,.25)", "Orange": "rgba(240,120,42,.22)"}
+               "blue": "🔵 Blue · missed this service", "ok": "🟢 On track"}
+TINT = {"Red": "rgba(208,59,59,.20)", "Yellow": "rgba(250,178,25,.25)", "Blue": "rgba(90,142,240,.22)"}
 
 
 def tint_status(col):
@@ -1051,6 +1067,10 @@ def account_box(store):
                 names = [home_church()]
             st.radio("Church", names, key="church_pick",
                      help="Admins can open any church. Branch teams only ever see their own.")
+        if r == "admin" and not base.demo and shared_passwords():
+            st.warning("These sign-ins share a password, so the app can't tell them apart: "
+                       + "; ".join(shared_passwords()) + ". Give each one a different password in Secrets.",
+                       icon=":material/key:")
         if not base.demo and st.button("Sign out", icon=":material/logout:", key="sign_out"):
             for k in ("role", "church", "church_pick"):
                 st.session_state.pop(k, None)
@@ -1260,8 +1280,8 @@ def page_dashboard():
         adults, kids = split_ages(list(last.get("present") or {}), mem)
         red = int((df.level == "red").sum()) if not df.empty else 0
         yellow = int((df.level == "yellow").sum()) if not df.empty else 0
-        orange = int((df.flag == "orange").sum()) if not df.empty else 0
-        ok = (int((df.level == "ok").sum()) if not df.empty else 0) - orange
+        blue = int((df.flag == "blue").sum()) if not df.empty else 0
+        ok = (int((df.level == "ok").sum()) if not df.empty else 0) - blue
         month = tday[:7]
         ft_month = [m for m in members if (m.get("first_visit") or "").startswith(month)]
         last_day = dt.date.fromisoformat(last["date"])
@@ -1274,7 +1294,7 @@ def page_dashboard():
                       f'kid{"s" if kids != 1 else ""} · {n_last} overall</span>'),
             dict(icon="🔔", label="Need a follow-up call", value=red + yellow,
                  foot=f'<span class="pill red">● {red} red</span> <span class="pill amber">● {yellow} yellow</span> '
-                      f'<span class="pill orange">● {orange} missed this service</span>'),
+                      f'<span class="pill blue">● {blue} missed this service</span>'),
             dict(icon="✨", label=f"First-timers · {today():%B}", value=len(ft_month),
                  foot=(f'<span class="pill blue">{pending} sign-up{"s" if pending != 1 else ""} to approve</span>'
                        if pending else '<span class="kpi-sub">no sign-ups waiting</span>')),
@@ -1285,12 +1305,12 @@ def page_dashboard():
             a, b = st.container(key="dash_charts").columns([1, 1.35], gap="medium")
             with a:  # donut: where everyone on the register stands
                 fig = go.Figure(go.Pie(
-                    labels=["On track", "Missed this service", "Yellow", "Red"], values=[ok, orange, yellow, red],
+                    labels=["On track", "Missed this service", "Yellow", "Red"], values=[ok, blue, yellow, red],
                     hole=0.72, sort=False,
-                    marker=dict(colors=[STATUS["ok"], STATUS["orange"], STATUS["yellow"], STATUS["red"]],
+                    marker=dict(colors=[STATUS["ok"], STATUS["blue"], STATUS["yellow"], STATUS["red"]],
                                 line=dict(color="#141c22", width=2)),
                     textinfo="none", hovertemplate="%{label}: %{value} people (%{percent})<extra></extra>"))
-                fig.add_annotation(text=f"<b style='font-size:30px;color:{INK['primary']}'>{ok + orange + yellow + red}</b>"
+                fig.add_annotation(text=f"<b style='font-size:30px;color:{INK['primary']}'>{ok + blue + yellow + red}</b>"
                                         f"<br><span style='color:{INK['secondary']}'>on the register</span>",
                                    showarrow=False, x=0.5, y=0.5)
                 fig.update_layout(showlegend=True, legend=dict(orientation="h", y=-0.05, x=0.5, xanchor="center"))
@@ -1383,7 +1403,7 @@ def church_numbers(base) -> list[dict]:
         rows.append(dict(church=c, date=last["date"] if last else "", present=len(p), adults=adults, kids=kids,
                          first=sum(1 for i in p if mem[i].get("type") == "first_timer"),
                          new_month=sum(1 for m in members if (m.get("first_visit") or "").startswith(month)),
-                         register=len(df), red=n("red"), yellow=n("yellow"), orange=n("orange"),
+                         register=len(df), red=n("red"), yellow=n("yellow"), blue=n("blue"),
                          trend=[len(s["present"]) for s in past[-12:]],
                          change=len(p) - len(past[-2]["present"]) if len(past) > 1 else None))
     return rows
@@ -1426,7 +1446,7 @@ def page_overview():
     table = pd.DataFrame([{"Church": r["church"], "Latest service": fmt_date(r["date"], "%a %d %b", "None yet"),
                            "Present": r["present"], "Change": r["change"], "Adults": r["adults"], "Kids": r["kids"],
                            "First-timers": r["first"], "On the register": r["register"], "🔴 Red": r["red"],
-                           "🟡 Yellow": r["yellow"], "🟠 Missed this service": r["orange"],
+                           "🟡 Yellow": r["yellow"], "🔵 Missed this service": r["blue"],
                            "Last 12 services": r["trend"]} for r in rows])
     with card("ov_table"):
         st.markdown(f"**Church by church** · {len(rows)} churches")
@@ -1689,11 +1709,11 @@ def followup_panel(store):
             st.info("No services recorded yet. Tick people on the **Check-in** tab and this list fills itself in.")
             return
         red, yellow = int((df.level == "red").sum()), int((df.level == "yellow").sum())
-        orange = int((df.flag == "orange").sum())
+        blue = int((df.flag == "blue").sum())
         k = st.columns(5)
         k[0].metric("🔴 Red", red, f"{RED_AT}+ in a row", delta_color="off", border=True)
         k[1].metric("🟡 Yellow", yellow, f"{YELLOW_AT}–{RED_AT - 1} in a row", delta_color="off", border=True)
-        k[2].metric("🟠 Orange", orange, "missed this service", delta_color="off", border=True)
+        k[2].metric("🔵 Blue", blue, "missed this service", delta_color="off", border=True)
         k[3].metric("🟢 On track", int((df.flag == "ok").sum()), border=True)
         last = past[-1]
         k[4].metric("This service", f"{len(last.get('present') or {})} present",

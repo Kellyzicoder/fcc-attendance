@@ -10,7 +10,7 @@ missing and follow up.
 | Page | What it does |
 |---|---|
 | Dashboard (home) | KPI tiles (last service, 4-service average, who needs a call, first-timers this month), where everyone stands (donut), people present over time, needs-follow-up list, and a side panel with notifications, latest check-ins and who to call next. Refreshes every 30 s. |
-| Follow-up & Check-in | **Needs follow-up**: 🟠 orange = missed the last service, 🟡 yellow = 3–4 services missed in a row, 🔴 red = 5+; filter by pastor; download any list as CSV or Excel. **Check-in**: ushers tick people as they arrive (names run A to Z down each column), ticks sync to every phone within ~3 s; new people can be added as a first-timer or a member, adult or child; admins can untick everyone for a service in one step. **One person**: pick someone and see every day they came. **Pastors**: each pastor's list of about ten people, who came, who to call, and a WhatsApp message to copy. **Archive**: people not seen for two years. |
+| Follow-up & Check-in | **Needs follow-up**: 🔵 blue = missed this service (a heads-up, no call needed), 🟡 yellow = 3–4 services missed in a row, 🔴 red = 5+; filter by pastor; download any list as CSV or Excel. **Check-in**: ushers tick people as they arrive (names run A to Z down each column), ticks sync to every phone within ~3 s; new people can be added as a first-timer or a member, adult or child; admins can untick everyone for a service in one step. **One person**: pick someone and see every day they came. **Pastors**: each pastor's list of about ten people, who came, who to call, and a WhatsApp message to copy. **Archive**: people not seen for two years. |
 | Live | Real-time view of today's check-ins — count, first-timers, arrivals over time, latest arrivals. Refreshes itself; good on a screen during service. |
 | Insights | Attendance per service (members vs first-timers, 4-service average), first-timers per month, first-timer return rate, attendance by group. |
 | Members | The register (editable), sign-ups from the welcome form to approve, add people, import the Google Sheets CSV exports, and an **Activity** log of every change. |
@@ -36,6 +36,10 @@ with a sheet per church.
 Each person belongs to one church (people added before branches existed belong to the home church). A branch's
 lists, ticks, follow-up colours and untick-all only ever touch that branch. The sidebar shows an account badge
 for whoever is signed in and a **Sign out** button.
+
+The password alone decides who someone is, so every password must be different. A church's name can appear under
+both `[church_admin_passwords]` and `[church_passwords]`; that is expected. If two sign-ins share a password, the HQ
+admin sees a warning in the sidebar.
 
 **Safe when many people use it at once.** The same ideas banks use for payments:
 
