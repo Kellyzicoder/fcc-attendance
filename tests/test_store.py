@@ -123,10 +123,10 @@ def test_daily_report_builds(store):
     assert r["subject"] and "<html" in r["html"].lower() and len(r["xlsx"]) > 1000
 
 
-def test_orange_marks_people_who_missed_the_latest_service_only(store):
+def test_blue_marks_people_who_missed_the_latest_service_only(store):
     df = A.missed_streaks(store.list_members(), store.list_services())
-    assert set(df[df.flag == "orange"].missed) <= {1, 2}
-    assert (df[df.flag == "orange"].level == "ok").all()  # orange is an early warning, not yet a follow-up call
+    assert set(df[df.flag == "blue"].missed) <= {1, 2}
+    assert (df[df.flag == "blue"].level == "ok").all()  # blue is only a heads-up, not yet a follow-up call
     assert (df[df.missed == 0].flag == "ok").all()
     assert (df[df.level != "ok"].flag == df[df.level != "ok"].level).all()  # yellow and red are unchanged
 
@@ -198,3 +198,13 @@ def test_people_per_pastor_can_be_changed_for_each_church(store):
     assert A.group_size(syd) == A.PASTOR_GROUP_SIZE
     syd.set_setting("pastor_group_size:Sydney", "15")
     assert A.group_size(syd) == 15 and A.group_size(home) == A.PASTOR_GROUP_SIZE
+
+
+def test_passwords_that_are_shared_are_reported(monkeypatch):
+    import streamlit as st
+    secrets = {"admin_password": "a", "bishop_password": "b", "attendance_password": "t",
+               "church_admin_passwords": {"Melbourne": "m-admin"}, "church_passwords": {"Melbourne": "m-team"}}
+    monkeypatch.setattr(st, "secrets", secrets)
+    assert A.shared_passwords() == []  # the same church name under both headings is fine
+    secrets["church_passwords"]["Melbourne"] = "m-admin"
+    assert A.shared_passwords() == ["Melbourne church admin and Melbourne team"]
