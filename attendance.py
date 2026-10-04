@@ -7,7 +7,7 @@ Real member data is never stored in this repository.
 
 Tables (same in SQLite and Postgres):
   members(id, full_name, phone, email, group_name, role, status, type, date_joined, first_visit,
-          invited_by, follow_up, created_at)
+          invited_by, follow_up, created_at, pastor, version)
   services(service_date PRIMARY KEY, name)
   attendance(service_date, member_id, checked_at, PRIMARY KEY (service_date, member_id))
   activity_log(id, at, kind, service_date, member_id, detail, by_name, result)   -- append-only history
@@ -37,7 +37,8 @@ import streamlit as st
 TZ = ZoneInfo("Pacific/Auckland")
 BRAND = dict(navy="#2c4b77", teal="#208088", green="#2aa686", slate="#293641", gold="#ffcf00")  # from the FCC logo
 YELLOW_AT, RED_AT = 3, 5          # services missed in a row
-INACTIVE = {"inactive", "moved", "left", "deceased", "transferred"}
+INACTIVE = {"inactive", "moved", "left", "deceased", "transferred", "away"}
+ARCHIVE_DAYS = 730  # not seen for two years → moved to the Archive list (they come back out the day they're ticked)
 AMBER, CRIMSON = "#fab219", "#d03b3b"   # reserved status colours (always shown with icon + label)
 # Chart colours, validated for colour-blind separation and contrast on the dark surface (#141c22).
 SERIES = dict(members="#2aa686", first_timers="#5a8ef0")
@@ -63,7 +64,7 @@ def new_id() -> str:
 
 # ---------------------------------------------------------------- storage (SQL: SQLite demo or Postgres)
 MEMBER_COLS = ["full_name", "phone", "email", "group_name", "role", "status", "type", "date_joined", "first_visit",
-               "invited_by", "follow_up", "created_at"]
+               "invited_by", "follow_up", "created_at", "pastor"]
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS members (
         id TEXT PRIMARY KEY, full_name TEXT NOT NULL, phone TEXT, email TEXT, group_name TEXT, role TEXT,
@@ -84,7 +85,8 @@ SCHEMA = [
     "CREATE INDEX IF NOT EXISTS activity_log_at ON activity_log(at)",
 ]
 # Columns added after launch. Postgres skips ones that exist; SQLite reports "duplicate column", which is ignored.
-MIGRATIONS = ["ALTER TABLE members ADD COLUMN {ine}version INTEGER NOT NULL DEFAULT 1"]
+MIGRATIONS = [("versioned", "ALTER TABLE members ADD COLUMN {ine}version INTEGER NOT NULL DEFAULT 1"),
+              ("has_pastor", "ALTER TABLE members ADD COLUMN {ine}pastor TEXT")]
 # Postgres only: lock the app's tables so the public (publishable) key used by the welcome form can't read them.
 PG_SECURITY = [f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY"
                for t in ("members", "services", "attendance", "settings", "email_log", "activity_log")]
@@ -142,6 +144,7 @@ class SqlStore:
         self._cache = {}
         self._in_tx = False
         self.versioned = False  # set by _ensure_schema once the members.version column is known to exist
+        self.has_pastor = False  # likewise for members.pastor
         self._wrote = {}  # service date -> time of the last tick/untick, so a poll never shows an older read
         self._schema_ready = False
         self._down_until = 0.0
@@ -158,8 +161,8 @@ class SqlStore:
         if not self._schema_ready:
             for stmt in SCHEMA + ([DEMO_REGISTRATIONS] if self.demo else []):
                 self._raw(stmt)
-            self.versioned = True
-            for stmt in MIGRATIONS:  # best effort: without the version column, edits simply aren't version-checked
+            for flag, stmt in MIGRATIONS:  # best effort: a missing column only switches its own feature off
+                setattr(self, flag, True)
                 try:
                     self._raw(stmt.format(ine="" if self.demo else "IF NOT EXISTS "))
                 except Exception as e:
@@ -167,7 +170,7 @@ class SqlStore:
                         continue
                     if type(e).__name__ == "OperationalError":
                         raise
-                    self.versioned = False
+                    setattr(self, flag, False)
             if not self.demo:
                 import psycopg
                 for stmt in PG_SECURITY:  # best effort: never block the app if the role can't alter a table
@@ -353,6 +356,17 @@ class SqlStore:
                    "ON CONFLICT (service_date) DO UPDATE SET name = excluded.name", (date, name or "Service"))
         self._touched(date)
 
+    def _member_cols(self) -> list[str]:
+        return [c for c in MEMBER_COLS if c != "pastor" or self.has_pastor]
+
+    def clear_service(self, date: str, by: str = "") -> int:
+        """Untick everyone for one service in a single step. Returns how many ticks were removed."""
+        with self.transaction():
+            n = self._exec("DELETE FROM attendance WHERE service_date = ?", (date,))
+            self.log("clear_service", f"{n} {'person' if n == 1 else 'people'} unticked at once", None, date, by)
+        self._touched(date)
+        return n
+
     def set_present(self, date: str, mid: str, present: bool, name: str = "Sunday Service",
                     seen: str | None = None, by: str = "") -> str:
         """Make this person present or absent. Returns 'done', 'already' (it was already that way) or 'changed'.
@@ -391,21 +405,21 @@ class SqlStore:
 
     def upsert_members(self, rows: list[dict]):
         existing = {r["id"] for r in self._exec("SELECT id FROM members", fetch=True)}
-        inserts, updates = [], []
+        inserts, updates, mcols = [], [], self._member_cols()
         for r in rows:
             r = dict(r)
             if "group" in r:
                 r["group_name"] = r.pop("group")
             mid = r.pop("id", None) or new_id()
-            vals = [None if (r.get(c) == "" and c in ("date_joined", "first_visit")) else r.get(c) for c in MEMBER_COLS]
+            vals = [None if (r.get(c) == "" and c in ("date_joined", "first_visit")) else r.get(c) for c in mcols]
             (updates if mid in existing else inserts).append((mid, vals))
         if inserts:
-            cols = ", ".join(["id"] + MEMBER_COLS)
-            marks = ", ".join(["?"] * (len(MEMBER_COLS) + 1))
+            cols = ", ".join(["id"] + mcols)
+            marks = ", ".join(["?"] * (len(mcols) + 1))
             self._exec(f"INSERT INTO members ({cols}) VALUES ({marks}) ON CONFLICT (id) DO NOTHING",
                        [[mid] + vals for mid, vals in inserts], many=True)
         if updates:  # only overwrite fields that were provided; COALESCE keeps what's already stored
-            sets = ", ".join(f"{c} = COALESCE(?, {c})" for c in MEMBER_COLS) + (", version = version + 1" if self.versioned else "")
+            sets = ", ".join(f"{c} = COALESCE(?, {c})" for c in mcols) + (", version = version + 1" if self.versioned else "")
             self._exec(f"UPDATE members SET {sets} WHERE id = ?", [vals + [mid] for mid, vals in updates], many=True)
         self._cache.pop("members", None)
         return len(rows)
@@ -422,7 +436,7 @@ class SqlStore:
             fields = dict(fields)
             if "group" in fields:
                 fields["group_name"] = fields.pop("group")
-            cols = [c for c in fields if c in MEMBER_COLS and c != "created_at"]
+            cols = [c for c in fields if c in self._member_cols() and c != "created_at"]
             if not cols:
                 continue
             vals = [None if (fields[c] in ("", None) and c in ("date_joined", "first_visit")) else fields[c] for c in cols]
@@ -580,7 +594,14 @@ def _seed_demo(store: "SqlStore"):
     people = [dict(id=new_id(), full_name=n, phone=f"021 {rng.integers(100, 999)} {rng.integers(1000, 9999)}",
                    email="", group=str(rng.choice(groups)), role="", status="", type="member", date_joined="",
                    first_visit="", invited_by="", follow_up="", created_at=now_iso()) for n in names]
-    store.upsert_members([dict(p) for p in people])
+    pastors = ["Pastor Ama", "Pastor Kofi", "Pastor Esi", "Pastor Yaw"]
+    for i, p in enumerate(people[:40]):  # ten names each; the rest are not assigned yet
+        p["pastor"] = pastors[i // 10]
+    old = (today() - dt.timedelta(days=ARCHIVE_DAYS + 200)).isoformat()
+    gone = [dict(id=new_id(), full_name=n, phone="", email="", group="", role="", status="", type="member",
+                 date_joined=old, first_visit="", invited_by="", follow_up="", created_at=now_iso(), pastor="")
+            for n in ("Old Friend One", "Old Friend Two", "Old Friend Three")]
+    store.upsert_members([dict(p) for p in people + gone])
     ids = [p["id"] for p in people]
     sundays = [today() - dt.timedelta(days=(today().weekday() + 1) % 7 + 7 * k) for k in range(12)][::-1]
     habit = {m: rng.beta(6, 2) for m in ids}
@@ -643,12 +664,16 @@ def db_safe(fn):
 
 
 # ---------------------------------------------------------------- follow-up logic
-def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | None = None) -> pd.DataFrame:
+def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | None = None,
+                   archive: str = "hide") -> pd.DataFrame:
     """Per person: services missed in a row (most recent first), last seen, and a yellow/red flag.
 
     Only services on or after a person's start (date joined / first visit) count against them.
+    People not seen for ARCHIVE_DAYS (two years) are archived: archive="hide" leaves them out (the default, so
+    follow-up lists and counts skip them), "only" returns just them, "all" returns everyone.
     """
     upto = upto or today()
+    cutoff = (upto - dt.timedelta(days=ARCHIVE_DAYS)).isoformat()
     svcs = sorted((s for s in services if s.get("date") and s["date"] <= upto.isoformat()), key=lambda s: s["date"])
     rows = []
     for m in members:
@@ -662,12 +687,20 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
                 last_seen = s["date"]
                 break
             streak += 1
+        if last_seen is None:  # ticked before their recorded start date still counts as seen
+            last_seen = next((s["date"] for s in reversed(svcs) if m["id"] in (s.get("present") or {})), None)
+        # last sign of them: last tick, else when they joined / first visited / were added
+        ref = last_seen or (start if start != "0000" else (m.get("created_at") or "")[:10])
+        archived = bool(ref) and ref < cutoff
+        if (archive == "hide" and archived) or (archive == "only" and not archived):
+            continue
         attended = sum(m["id"] in (s.get("present") or {}) for s in mine)
         level = "red" if streak >= RED_AT else "yellow" if streak >= YELLOW_AT else "ok"
         rows.append(dict(id=m["id"], name=m.get("full_name", ""), missed=streak, level=level, last_seen=last_seen,
                          attended=attended, eligible=len(mine), phone=m.get("phone", ""), group=m.get("group", ""),
                          type=m.get("type", "member"), invited_by=m.get("invited_by", ""),
-                         follow_up=m.get("follow_up", "")))
+                         follow_up=m.get("follow_up", ""), pastor=m.get("pastor", "") or "", archived=archived,
+                         since=ref))
     df = pd.DataFrame(rows)
     if df.empty:
         return df
@@ -709,7 +742,8 @@ def parse_registers(register: pd.DataFrame | None, first_timers: pd.DataFrame | 
     if register is not None:
         c = dict(name=_col(register, "full name"), phone=_col(register, "phone"), email=_col(register, "email"),
                  joined=_col(register, "date joined"), group=_col(register, "group"),
-                 role=_col(register, "ministry", "role"), status=_col(register, "status"))
+                 role=_col(register, "ministry", "role"), status=_col(register, "status"),
+                 pastor=_col(register, "pastor"))
         reg = register[register[c["name"]].map(_s) != ""]
         dups = reg[c["name"]].map(norm).value_counts()
         for n, k in dups[dups > 1].items():
@@ -719,7 +753,8 @@ def parse_registers(register: pd.DataFrame | None, first_timers: pd.DataFrame | 
             key = norm(r[c["name"]])
             out[key] = dict(full_name=_s(r[c["name"]]), phone=_s(r.get(c["phone"])), email=_s(r.get(c["email"])),
                             date_joined=_date(r.get(c["joined"])), group=_s(r.get(c["group"])),
-                            role=_s(r.get(c["role"])), status=_s(r.get(c["status"])), type="member")
+                            role=_s(r.get(c["role"])), status=_s(r.get(c["status"])), type="member",
+                            pastor=_s(r.get(c["pastor"])) if c["pastor"] else "")
     if first_timers is not None:
         c = dict(name=_col(first_timers, "full name"), date=_col(first_timers, "date of visit"),
                  phone=_col(first_timers, "phone"), email=_col(first_timers, "email"),
@@ -876,6 +911,8 @@ def checkin_panel(store):
 
     members = sorted(store.list_members(), key=lambda m: norm(m.get("full_name", "")))
     members = [m for m in members if norm(m.get("status", "")) not in INACTIVE]
+    old = missed_streaks(members, store.list_services(), archive="only")
+    archived = set(old.id) if not old.empty else set()  # not seen for two years: only shown when searched for
 
     def on_tick(mid):
         present = bool(st.session_state[f"ci_{date}_{mid}"])
@@ -896,23 +933,40 @@ def checkin_panel(store):
         s = store.get_service(date) or {}
         present = s.get("present") or {}
         st.session_state[seen_key] = dict(present)
-        shown = [m for m in members if not q or norm(q) in norm(m.get("full_name", ""))]
+        listed = [m for m in members if m["id"] not in archived or m["id"] in present]
+        shown = [m for m in (members if q else listed) if not q or norm(q) in norm(m.get("full_name", ""))]
         k = st.columns(3)
         k[0].metric("Checked in", f"{len(present)}", border=True)
-        k[1].metric("Not yet", f"{max(len(members) - len(present), 0)}", border=True)
+        k[1].metric("Not yet", f"{max(len(listed) - len(present), 0)}", border=True)
         k[2].metric("First-timers today", f"{sum(1 for m in members if m['id'] in present and m.get('type') == 'first_timer')}",
                     border=True)
         with card("ci_list"):
-            st.caption(f"Live · ticks from other phones appear within a few seconds · showing {len(shown)} of {len(members)}")
+            st.caption(f"Live · ticks from other phones appear within a few seconds · showing {len(shown)} of {len(listed)}")
             cols = st.columns(per_row)
             for i, m in enumerate(shown):
                 key = f"ci_{date}_{m['id']}"
                 st.session_state[key] = m["id"] in present  # sync ticks made on other devices
                 tag = " · first-timer" if m.get("type") == "first_timer" else ""
+                tag += " · archive" if m["id"] in archived else ""
                 cols[i % per_row].checkbox(f"{m['full_name']}{tag}", key=key, on_change=on_tick, args=(m["id"],))
 
     with st.container(key="live_ci"):  # refreshes quietly (see app.py CSS)
         live_list()
+
+    if is_admin(store):
+        with st.expander("Untick everyone for this service", icon=":material/remove_done:"):
+            n_now = len((store.get_service(date) or {}).get("present") or {})
+            st.caption(f"Removes all {n_now} tick{'s' if n_now != 1 else ''} for **{day:%A %d %B %Y}** in one go. "
+                       "People stay on the register, and the Activity log records it. This can't be undone.")
+            sure = st.checkbox("Yes, untick everyone for this date", key=f"ci_clear_ok_{date}")
+            if st.button("Untick everyone", icon=":material/remove_done:", disabled=not (sure and n_now),
+                         key=f"ci_clear_{date}"):
+                n = store.clear_service(date, by=actor(store))
+                for k_ in [k_ for k_ in st.session_state if str(k_).startswith(f"ci_{date}_")]:
+                    del st.session_state[k_]
+                st.session_state.pop(f"ci_clear_ok_{date}", None)
+                st.toast(f"Unticked {n} {'person' if n == 1 else 'people'} for {day:%d %b}.", icon=":material/remove_done:")
+                st.rerun()
 
     with st.expander("Add a first-timer and check them in", icon=":material/person_add:"):
         with st.form("ft_add", clear_on_submit=True):
@@ -1098,6 +1152,12 @@ def page_dashboard():
                 ("📞", f"{_esc(r.name)}", f"{r.phone or 'no phone'} · {r.missed} missed")
                 for r in df[df.level == "red"].head(5).itertuples()]
             send_now_button(store, "dash_send_now")
+            with st.popover("Summary for WhatsApp", icon=":material/chat:", width="stretch"):
+                with_names = st.checkbox("Include names", key="wa_names",
+                                         help="Leave off for big group chats; turn on for the leaders' chat.")
+                link = st.text_input("Livestream link (optional)", key="wa_link", placeholder="https://…")
+                st.code(whatsapp_summary(store, with_names, link), language=None, wrap_lines=True)
+                st.caption("Tap the copy icon at the top right of the box, then paste into WhatsApp.")
             st.html(feed("Notifications", notes, "All caught up")
                     + feed("Latest check-ins" + ("" if here else f" · {last_day:%d %b}"), act, "No check-ins yet")
                     + feed("Call next", call, "No one in red — great!"))
@@ -1115,16 +1175,192 @@ def page_followup():
     if not gate(store):
         return
     demo_note(store)
-    tab_fu, tab_ci = st.tabs([":material/notification_important: Needs follow-up", ":material/how_to_reg: Check-in"])
+    tab_fu, tab_ci, tab_one, tab_pastors, tab_old = st.tabs(
+        [":material/notification_important: Needs follow-up", ":material/how_to_reg: Check-in",
+         ":material/person_search: One person", ":material/diversity_3: Pastors", ":material/inventory_2: Archive"])
     with tab_fu:
         followup_panel(store)
     with tab_ci:
         checkin_panel(store)
+    with tab_one:
+        person_panel(store)
+    with tab_pastors:
+        pastors_panel(store)
+    with tab_old:
+        archive_panel(store)
+
+
+def person_panel(store):
+    """Pick one person and see every day they came."""
+    members = sorted(store.list_members(), key=lambda m: norm(m.get("full_name", "")))
+    if not members:
+        st.info("No people on the register yet.")
+        return
+    by_id = {m["id"]: m for m in members}
+    mid = st.selectbox("Person", [m["id"] for m in members], index=None, placeholder="Type a name…",
+                       format_func=lambda i: by_id[i]["full_name"], key="one_person")
+    if not mid:
+        st.caption("Choose someone to see the days they came, their attendance rate and when they were last seen.")
+        return
+    m = by_id[mid]
+    services = sorted([s for s in store.list_services() if s.get("date", "") <= today().isoformat()],
+                      key=lambda s: s["date"])
+    came = [s for s in services if mid in (s.get("present") or {})]
+    row = missed_streaks([m], services, archive="all")
+    r = row.iloc[0] if not row.empty else None
+    facts = [f"{'First-timer' if m.get('type') == 'first_timer' else 'Member'}"]
+    for label, key in (("Status", "status"), ("Pastor", "pastor"), ("Group", "group"), ("Phone", "phone")):
+        if m.get(key):
+            facts.append(f"{label}: {m[key]}")
+    st.markdown(f"### {m['full_name']}")
+    st.caption(" · ".join(facts))
+    k = st.columns(4)
+    k[0].metric("Times came", len(came), border=True)
+    k[1].metric("Attendance", f"{r.rate:.0%}" if r is not None and pd.notna(r.rate) else "n/a",
+                f"{int(r.attended)} of {int(r.eligible)} services" if r is not None else None, delta_color="off", border=True)
+    k[2].metric("Last seen", fmt_date(came[-1]["date"], "%d %b %Y") if came else "Not yet", border=True)
+    k[3].metric("Missed in a row", int(r.missed) if r is not None else 0,
+                "archived" if r is not None and r.archived else None, delta_color="off", border=True)
+    recent = services[-26:]
+    if recent:
+        dots = "".join(f'<span title="{fmt_date(s["date"], "%d %b %Y")}: {"came" if mid in (s.get("present") or {}) else "missed"}" '
+                       f'style="display:inline-block;width:14px;height:14px;border-radius:4px;margin:0 3px 3px 0;'
+                       f'background:{STATUS["ok"] if mid in (s.get("present") or {}) else "rgba(255,255,255,.10)"}"></span>'
+                       for s in recent)
+        with card("one_strip"):
+            st.markdown(f"**Last {len(recent)} services** · green = came, grey = missed (oldest on the left)")
+            st.html(f'<div style="line-height:0">{dots}</div>')
+    with card("one_days"):
+        st.markdown(f"**Days {m['full_name'].split()[0]} came** · {len(came)}")
+        if not came:
+            st.caption("No ticks recorded yet.")
+        else:
+            table = pd.DataFrame([dict(Date=fmt_date(s["date"], "%a %d %b %Y"), Service=s.get("name", ""),
+                                       **{"Checked in at": fmt_date(s["present"][mid], "%H:%M", "")})
+                                  for s in reversed(came)])
+            st.dataframe(table, hide_index=True, width="stretch", height=min(38 * (len(table) + 1) + 4, 420))
+            st.download_button("Download these dates (CSV)", table.to_csv(index=False),
+                               f"{norm(m['full_name']).replace(' ', '_')}_attendance.csv", "text/csv",
+                               icon=":material/download:")
+
+
+PASTOR_GROUP_SIZE = 10  # each pastor looks after about ten people
+
+
+def pastors_panel(store):
+    """Each pastor's small group of names, with who was there last service and who needs a call."""
+    members, services = store.list_members(), store.list_services()
+    df = missed_streaks(members, services)
+    if df.empty:
+        st.info("No people on the register yet.")
+        return
+    past = sorted([s for s in services if s.get("date", "") <= today().isoformat()], key=lambda s: s["date"])
+    here = set((past[-1].get("present") or {})) if past else set()
+    df = df.assign(here=df.id.isin(here), pastor=df.pastor.str.strip())
+    named = df[df.pastor != ""]
+    if named.empty:
+        st.info("No one has a pastor yet. An admin can type a pastor's name in the **Pastor** column under "
+                "**Members → Register** (about ten people each), and their lists appear here.",
+                icon=":material/diversity_3:")
+        return
+    summary = (named.groupby("pastor").agg(People=("id", "count"), here=("here", "sum"),
+                                           Red=("level", lambda c: int((c == "red").sum())),
+                                           Yellow=("level", lambda c: int((c == "yellow").sum()))).reset_index())
+    summary = summary.rename(columns={"pastor": "Pastor", "here": "Came last service"})
+    summary["People"] = summary.People.map(lambda n: f"{n} of {PASTOR_GROUP_SIZE}" + (" ⚠️" if n > PASTOR_GROUP_SIZE else ""))
+    with card("pastor_all"):
+        st.markdown(f"**All pastors** · {len(summary)} pastors · {len(named)} people assigned · "
+                    f"{len(df) - len(named)} not assigned yet")
+        st.dataframe(summary, hide_index=True, width="stretch")
+    who = st.selectbox("Pastor", sorted(named.pastor.unique(), key=str.lower) + ["Not assigned yet"], key="pastor_pick")
+    mine = df[df.pastor == ""] if who == "Not assigned yet" else df[df.pastor == who]
+    table = pd.DataFrame({"Status": mine.level.map(LEVEL_LABEL), "Name": mine.name,
+                          "Last service": mine.here.map({True: "✅ Came", False: "—"}),
+                          "Missed in a row": mine.missed,
+                          "Last seen": mine.last_seen.map(lambda v: fmt_date(v, "%d %b %Y")), "Phone": mine.phone})
+    with card("pastor_one"):
+        st.markdown(f"**{who}** · {len(mine)} {'person' if len(mine) == 1 else 'people'}")
+        st.dataframe(table, hide_index=True, width="stretch", height=min(38 * (len(table) + 1) + 4, 460))
+    if who != "Not assigned yet":
+        with st.expander("Message for this pastor (copy for WhatsApp)", icon=":material/chat:"):
+            st.code(whatsapp_pastor(who, mine, past[-1] if past else None), language=None, wrap_lines=True)
+
+
+def archive_panel(store):
+    """People not seen for two years. They are left out of follow-up and the check-in list, never deleted."""
+    df = missed_streaks(store.list_members(), store.list_services(), archive="only")
+    years = ARCHIVE_DAYS // 365
+    st.caption(f"People we haven't seen for {years} years move here on their own. They no longer count in follow-up "
+               "or the dashboard, and are hidden on Check-in unless you search for their name. "
+               "Tick them in when they come back and they return to the normal lists straight away.")
+    if df.empty:
+        st.success(f"Nobody has been away for {years} years.", icon=":material/done_all:")
+        return
+    table = pd.DataFrame({"Name": df.name, "Last seen": df.last_seen.map(lambda v: fmt_date(v, "%d %b %Y", "Never ticked")),
+                          "On the register since": df.since.map(lambda v: fmt_date(v, "%d %b %Y", "")),
+                          "Phone": df.phone, "Pastor": df.pastor, "Group": df.group}).sort_values("Name")
+    with card("archive_list"):
+        st.markdown(f"**Archive** · {len(table)} {'person' if len(table) == 1 else 'people'}")
+        st.dataframe(table, hide_index=True, width="stretch", height=min(38 * (len(table) + 1) + 4, 520))
+        st.download_button("Download archive (CSV)", table.to_csv(index=False), "archive.csv", "text/csv",
+                           icon=":material/download:")
+
+
+# ---------------------------------------------------------------- WhatsApp summaries (plain text to copy)
+def _names(rows, limit: int = 12) -> str:
+    names = [str(n) for n in rows]
+    return ", ".join(names[:limit]) + (f" +{len(names) - limit} more" if len(names) > limit else "")
+
+
+def whatsapp_summary(store, names: bool = False, link: str = "") -> str:
+    """This week's numbers as a WhatsApp message (*bold* is WhatsApp's own formatting)."""
+    members, services = store.list_members(), store.list_services()
+    mem = {m["id"]: m for m in members}
+    past = sorted([s for s in services if s.get("date", "") <= today().isoformat()], key=lambda s: s["date"])
+    if not past:
+        return "No services recorded yet."
+    last = past[-1]
+    p = last.get("present") or {}
+    day = dt.date.fromisoformat(last["date"])
+    counts = [len(s.get("present") or {}) for s in past]
+    change = counts[-1] - counts[-2] if len(counts) > 1 else None
+    first = [mem[i]["full_name"] for i in p if mem.get(i, {}).get("type") == "first_timer"]
+    df = missed_streaks(members, services)
+    red = df[df.level == "red"] if not df.empty else df
+    yellow = df[df.level == "yellow"] if not df.empty else df
+    arrow = "" if not change else f" ({'↑' if change > 0 else '↓'} {abs(change)} on last time)"
+    lines = [f"*FCC {last.get('name') or 'Service'} · {day:%a %d %b %Y}* ⛪",
+             f"✅ Present: *{len(p)}*{arrow}",
+             f"👋 First-timers: *{len(first)}*" + (f" ({_names(first)})" if names and first else ""),
+             f"📊 Average, last {len(counts[-4:])} services: *{sum(counts[-4:]) / len(counts[-4:]):.0f}*",
+             f"🔴 Missed {RED_AT}+ in a row: *{len(red)}*" + (f" ({_names(red.name)})" if names and len(red) else ""),
+             f"🟡 Missed {YELLOW_AT}–{RED_AT - 1} in a row: *{len(yellow)}*"
+             + (f" ({_names(yellow.name)})" if names and len(yellow) else "")]
+    if link.strip():
+        lines.append(f"📺 Livestream: {link.strip()}")
+    return "\n".join(lines)
+
+
+def whatsapp_pastor(pastor: str, mine: pd.DataFrame, last: dict | None) -> str:
+    day = f" · {dt.date.fromisoformat(last['date']):%a %d %b}" if last else ""
+    came, missed = mine[mine.here], mine[~mine.here]
+    need = mine[mine.level != "ok"]
+    lines = [f"*{pastor} · your people{day}* ⛪", f"✅ Came: *{len(came)} of {len(mine)}*"]
+    if len(came):
+        lines.append(_names(came.name, 20))
+    if len(missed):
+        lines.append(f"🙏 Not there: {_names(missed.name, 20)}")
+    if len(need):
+        lines.append("📞 Please call: " + _names(
+            [f"{r.name} ({r.missed} missed{', ' + r.phone if r.phone else ''})" for r in need.itertuples()], 20))
+    return "\n".join(lines)
 
 
 def followup_panel(store):
     show = st.segmented_control("Show", ["Needs follow-up", "Red only", "Yellow only", "Everyone"],
                                 default="Needs follow-up", key="fu_show") or "Needs follow-up"
+    pastors = sorted({(m.get("pastor") or "").strip() for m in store.list_members()} - {""}, key=str.lower)
+    pastor = st.selectbox("Pastor", ["All pastors"] + pastors, key="fu_pastor") if pastors else "All pastors"
 
     @st.fragment(run_every=30)
     @db_safe
@@ -1146,10 +1382,12 @@ def followup_panel(store):
 
         view = {"Needs follow-up": df[df.level != "ok"], "Red only": df[df.level == "red"],
                 "Yellow only": df[df.level == "yellow"], "Everyone": df}[show]
+        if pastor != "All pastors":
+            view = view[view.pastor.str.strip() == pastor]
         table = pd.DataFrame({
             "Status": view.level.map(LEVEL_LABEL), "Name": view.name, "Missed in a row": view.missed,
             "Last seen": pd.to_datetime(view.last_seen, errors="coerce").dt.strftime("%d %b %Y").fillna("Not yet"),
-            "Attendance": view.rate, "Phone": view.phone, "Group": view.group,
+            "Attendance": view.rate, "Phone": view.phone, "Pastor": view.pastor, "Group": view.group,
             "Type": view.type.map({"member": "Member", "first_timer": "First-timer"}).fillna(view.type),
             "Invited by": view.invited_by})
 
@@ -1181,9 +1419,9 @@ def followup_panel(store):
         live_followup()
 
 
-EDIT_COLS = ["full_name", "type", "phone", "email", "group", "role", "status", "date_joined", "first_visit",
+EDIT_COLS = ["full_name", "type", "phone", "email", "group", "pastor", "role", "status", "date_joined", "first_visit",
              "invited_by", "follow_up"]
-STATUSES = ["Active", "Inactive", "Moved", "Left", "Transferred", "Deceased"]
+STATUSES = ["Active", "Away", "Inactive", "Moved", "Left", "Transferred", "Deceased"]
 
 
 def _as_date(v) -> str:
@@ -1211,7 +1449,8 @@ def register_editor(store):
     view = m if not q else m[m.apply(lambda r: q.lower() in " ".join(map(str, r)).lower(), axis=1)]
     view = view.sort_values("full_name", key=lambda s: s.str.lower())
     st.caption(f"{len(view)} of {len(m)} people · click a cell to edit, then **Save changes**. "
-               "To take someone off the lists, set Status to Moved/Inactive (their history is kept).")
+               "To take someone off the lists, set Status to Away (travelling, unwell) or Moved/Inactive "
+               "(their history is kept).")
     # Optimistic locking: remember each row's version when editing starts; keep it while edits are unsaved.
     ed_key, snap_key = f"reg_{q}", f"reg_versions_{q}"
     if not (st.session_state.get(ed_key) or {}).get("edited_rows") or snap_key not in st.session_state:
@@ -1227,6 +1466,7 @@ def register_editor(store):
             "phone": st.column_config.TextColumn("Phone", max_chars=30),
             "email": st.column_config.TextColumn("Email", max_chars=120),
             "group": st.column_config.TextColumn("Group"),
+            "pastor": st.column_config.TextColumn("Pastor", help="The pastor who looks after this person", max_chars=60),
             "role": st.column_config.TextColumn("Ministry / role"),
             "status": st.column_config.SelectboxColumn("Status", options=STATUSES + extra),
             "date_joined": st.column_config.TextColumn("Joined", help="DD/MM/YYYY", max_chars=10),
@@ -1339,7 +1579,7 @@ def page_members():
             st.markdown(SETUP_GUIDE)
 
 
-ACTIVITY_LABELS = {"tick": "Ticked in", "untick": "Unticked", "edit": "Edited", "add_person": "Added",
+ACTIVITY_LABELS = {"tick": "Ticked in", "untick": "Unticked", "clear_service": "Unticked everyone", "edit": "Edited", "add_person": "Added",
                    "signup_approved": "Approved sign-up", "signup_rejected": "Rejected sign-up"}
 RESULT_LABELS = {"done": "Done", "already": "No change (already done)",
                  "changed": "Blocked: someone else changed it first"}

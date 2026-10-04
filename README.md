@@ -10,7 +10,7 @@ missing and follow up.
 | Page | What it does |
 |---|---|
 | Dashboard (home) | KPI tiles (last service, 4-service average, who needs a call, first-timers this month), where everyone stands (donut), people present over time, needs-follow-up list, and a side panel with notifications, latest check-ins and who to call next. Refreshes every 30 s. |
-| Follow-up & Check-in | **Needs follow-up** tab: 🟡 yellow = 3–4 services missed in a row, 🔴 red = 5+; red first; CSV download. **Check-in** tab: ushers tick people as they arrive; ticks sync to every phone within ~3 s, and the list updates quietly without flashing; quick "add first-timer" form. |
+| Follow-up & Check-in | **Needs follow-up**: 🟡 yellow = 3–4 services missed in a row, 🔴 red = 5+; filter by pastor; CSV download. **Check-in**: ushers tick people as they arrive, ticks sync to every phone within ~3 s; admins can untick everyone for a service in one step. **One person**: pick someone and see every day they came. **Pastors**: each pastor's list of about ten people, who came, who to call, and a WhatsApp message to copy. **Archive**: people not seen for two years. |
 | Live | Real-time view of today's check-ins — count, first-timers, arrivals over time, latest arrivals. Refreshes itself; good on a screen during service. |
 | Insights | Attendance per service (members vs first-timers, 4-service average), first-timers per month, first-timer return rate, attendance by group. |
 | Members | The register (editable), sign-ups from the welcome form to approve, add people, import the Google Sheets CSV exports, and an **Activity** log of every change. |
@@ -38,6 +38,21 @@ The sidebar shows who is signed in and has a **Sign out** button.
 
 Ushers can type their name on the Check-in tab so it shows in the Activity log. The app adds the `activity_log`
 table and the `members.version` column itself; there is no SQL to run.
+
+**Taking someone off the red list.** Tick them in when they come (it clears itself), or set their Status in
+Members → Register to **Away** (travelling, unwell) or Moved/Inactive. People not seen for two years move to the
+Archive on their own and return the day they are ticked in again.
+
+**WhatsApp summary.** Dashboard → *Summary for WhatsApp* gives this week's numbers as text to copy and paste;
+names are left out unless you tick *Include names*.
+
+## Making changes safely
+
+Nothing goes straight to the live app. Changes are pushed to the preview branch, which updates
+https://fcc-attendance-preview.streamlit.app (demo data only). A pull request into `main` runs the checks in
+`tests/` (the app starts, every page opens, and the follow-up, archive, check-in and approval rules still hold).
+Merge only when the checks are green and the preview looks right; the live app then updates itself.
+To undo, press **Revert** on the merged pull request.
 
 Dark dashboard theme in the church colours (logo greens and gold). Chart colours are checked for colour-blind
 separation and contrast. The sidebar has **Layout** controls (names per row on Check-in, panel stacking).
