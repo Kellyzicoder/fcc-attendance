@@ -2254,11 +2254,11 @@ REPORT_SETUP = """
    brevo_api_key = "xkeysib-…"
    report_sender = "greaterloveauckland@gmail.com"
    ```
-4. **The 5pm schedule** — github.com/Kellyzicoder/fcc-attendance → **Settings → Secrets and variables → Actions →
+4. **The 1pm schedule** — github.com/Kellyzicoder/fcc-attendance → **Settings → Secrets and variables → Actions →
    New repository secret**, add: `DATABASE_URL` (same as in the app's Secrets), `BREVO_API_KEY`, `REPORT_SENDER`.
 
 Then press **Send report now** above to test. The first one may land in *Spam* — mark it *Not spam* once.
-The daily email goes out between 4:40 and 5pm NZ time; if it ever fails, GitHub emails the repo owner.
+The daily email goes out at about 1pm NZ time; if it ever fails, GitHub emails the repo owner.
 """
 
 
@@ -2266,7 +2266,7 @@ The daily email goes out between 4:40 and 5pm NZ time; if it ever fails, GitHub 
 def page_reports():
     import report as R
     store = get_store()
-    header("Reports", "The 5pm email to church leaders — who gets it, what's in it, and send it now", store)
+    header("Reports", "The 1pm email to church leaders — who gets it, what's in it, and send it now", store)
     if not gate(store, hq=True):
         return
     demo_note(store)
@@ -2275,7 +2275,7 @@ def page_reports():
     with left:
         with card("rep_send"):
             st.markdown("**Send the report**")
-            st.caption("Goes out automatically every day by 5pm (NZ). Use this to send the latest numbers any time — "
+            st.caption("Goes out automatically every day at about 1pm (NZ). Use this to send the latest numbers any time — "
                        "e.g. straight after the service, before 6pm.")
             if not cfg["ready"]:
                 st.warning("Email isn't set up yet — see the steps below.", icon=":material/settings:")
@@ -2301,7 +2301,7 @@ def page_reports():
             else:
                 st.dataframe(pd.DataFrame({
                     "Sent": _parse_times([h["sent_at"] for h in hist]).dt.strftime("%a %d %b %H:%M"),
-                    "Type": ["5pm (automatic)" if h["kind"] == "daily" else "Sent from the app" for h in hist],
+                    "Type": ["1pm (automatic)" if h["kind"] == "daily" else "Sent from the app" for h in hist],
                     "": ["✅ Sent" if h["ok"] else "❌ Failed" for h in hist],
                     "Details": [h["detail"] for h in hist]}), hide_index=True, width="stretch")
         with st.expander("Set up email sending", icon=":material/settings:", expanded=not cfg["ready"]):
