@@ -78,13 +78,13 @@ separation and contrast. The sidebar has **Layout** controls (names per row on C
 
 ## Daily email
 
-Every day by 5pm (NZ) a summary goes to the addresses on the Reports page (default greaterloveauckland@gmail.com):
+Every day at about 1pm (NZ) a summary goes to the addresses on the Reports page (default greaterloveauckland@gmail.com):
 check-ins, who needs a follow-up call (with phone numbers), new welcome-form sign-ups, plus an Excel workbook
 (Checked in · Follow-up · Sign-ups · Services) that opens in Excel or Google Sheets.
 
 - Scheduled by `.github/workflows/daily-report.yml` (GitHub Actions). Cron is UTC, so it tries several times across
-  NZST/NZDT; `scripts/daily_report.py` sends on the first run after 4:40pm NZ and logs it in `email_log`, so later
-  runs that evening skip. A failed run makes GitHub email the repo owner.
+  NZST/NZDT; `scripts/daily_report.py` sends on the first run after 1pm NZ and logs it in `email_log`, so later
+  runs that day skip. A failed run makes GitHub email the repo owner.
 - Sent through Brevo's free email API (300/day). Secrets: in the app `brevo_api_key`, `report_sender`; in GitHub
   Actions `DATABASE_URL`, `BREVO_API_KEY`, `REPORT_SENDER`. (A Gmail app password via `smtp_user`/`smtp_password`
   also works as a fallback.)
