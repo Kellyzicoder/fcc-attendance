@@ -1376,7 +1376,7 @@ def page_dashboard():
                 with_names = st.checkbox("Include names", key="wa_names",
                                          help="Leave off for big group chats; turn on for the leaders' chat.")
                 link = st.text_input("Livestream link (optional)", key="wa_link", placeholder="https://…")
-                emoji = st.checkbox("Emojis", value=True, key="wa_emoji", help="Turn off for a plain-text message.")
+                emoji = st.toggle("Emojis", value=True, key="wa_emoji", help="Turn off for a plain-text message.")
                 st.code(whatsapp_summary(store, with_names, link, emoji), language=None, wrap_lines=True)
                 st.caption("Tap the copy icon at the top right of the box, then paste into WhatsApp.")
             st.html(feed("Notifications", notes, "All caught up")
@@ -1469,7 +1469,7 @@ def page_overview():
     with card("ov_chart"):
         _plot(fig, 320, "People present at each church's latest service", key="ov_bar")
     with st.expander("Summary to send by WhatsApp (numbers only)", icon=":material/chat:"):
-        emoji = st.checkbox("Emojis", value=True, key="ov_emoji", help="Turn off for a plain-text message.")
+        emoji = st.toggle("Emojis", value=True, key="ov_emoji", help="Turn off for a plain-text message.")
         st.code(whatsapp_overview(rows, emoji), language=None, wrap_lines=True)
         st.caption("Tap the copy icon at the top right of the box, then paste into WhatsApp.")
 
@@ -1605,7 +1605,7 @@ def pastors_panel(store):
         st.dataframe(table, hide_index=True, width="stretch", height=min(38 * (len(table) + 1) + 4, 460))
     if who != "Not assigned yet":
         with st.expander("Message for this pastor (copy for WhatsApp)", icon=":material/chat:"):
-            emoji = st.checkbox("Emojis", value=True, key="pastor_emoji", help="Turn off for a plain-text message.")
+            emoji = st.toggle("Emojis", value=True, key="pastor_emoji", help="Turn off for a plain-text message.")
             st.code(whatsapp_pastor(who, mine, past[-1] if past else None, emoji), language=None, wrap_lines=True)
 
 
