@@ -1,8 +1,10 @@
 name: Daily attendance email
 
-# Sends the report by ~5pm New Zealand time, every day.
-# GitHub cron runs in UTC and can start a few minutes late, so it tries several times (covering both
-# NZST UTC+12 and NZDT UTC+13); the script sends on the first run after 4:40pm NZ and skips the rest.
+# Sends the report at about 1pm New Zealand time, every day.
+# GitHub cron runs in UTC, so it tries several times (covering both NZDT UTC+13 and NZST UTC+12); the script sends
+# on the first run after 1pm NZ and skips the rest.
+# GitHub can also start scheduled runs hours late. A run any time from 1pm until 6am the next morning still
+# sends that day's report (once), so a late start means a late email rather than no email.
 on:
   schedule:
     - cron: "5 0 * * *"    # 1:05pm NZ in summer
