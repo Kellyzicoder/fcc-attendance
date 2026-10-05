@@ -5,13 +5,15 @@ name: Daily attendance email
 # NZST UTC+12 and NZDT UTC+13); the script sends on the first run after 4:40pm NZ and skips the rest.
 on:
   schedule:
-    - cron: "40 3 * * *"   # 4:40pm NZDT
-    - cron: "55 3 * * *"
-    - cron: "10 4 * * *"
-    - cron: "40 4 * * *"   # 4:40pm NZST / 5:40pm NZDT
-    - cron: "55 4 * * *"
-    - cron: "10 5 * * *"
-    - cron: "40 5 * * *"   # last catch-up
+    - cron: "5 0 * * *"    # 1:05pm NZ in summer
+    - cron: "20 0 * * *"
+    - cron: "40 0 * * *"
+    - cron: "5 1 * * *"    # 1:05pm NZ in winter
+    - cron: "20 1 * * *"
+    - cron: "40 1 * * *"
+    - cron: "5 2 * * *"
+    - cron: "30 4 * * *"   # catch-ups in case the earlier ones were delayed
+    - cron: "30 7 * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -33,7 +35,7 @@ jobs:
         run: |
           now=$(TZ=Pacific/Auckland date +%H%M)
           echo "NZ time: $now"
-          if [ "${{ inputs.force }}" = "true" ] || { [ "$now" -ge 1640 ] && [ "$now" -lt 1900 ]; }; then
+          if [ "${{ inputs.force }}" = "true" ] || [ "$now" -ge 1300 ] || [ "$now" -lt 0600 ]; then
             echo "go=yes" >> "$GITHUB_OUTPUT"
           else
             echo "go=no" >> "$GITHUB_OUTPUT"
