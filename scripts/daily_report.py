@@ -1,6 +1,6 @@
-"""Send the 5pm attendance email. Run by .github/workflows/daily-report.yml (or by hand).
+"""Send the 1pm attendance email. Run by .github/workflows/daily-report.yml (or by hand).
 
-Safe to run many times: it only sends once per day (checked in the email_log table), from 4:40pm NZ onwards
+Safe to run many times: it only sends once per day (checked in the email_log table), from 1pm NZ onwards
 unless FORCE=1. If GitHub starts the run late, even after midnight, that day's report is still sent. Needs env vars DATABASE_URL and BREVO_API_KEY (REPORT_SENDER optional).
 """
 import os
@@ -23,7 +23,7 @@ def main() -> int:
     late = now.time() < CATCH_UP
     day = now.date() - dt.timedelta(days=1) if late and not force else now.date()
     if not force and not (late or now.time() >= START):
-        print(f"{now:%H:%M} NZ is before the 4:40pm send time — nothing to do.")
+        print(f"{now:%H:%M} NZ is before the 1pm send time — nothing to do.")
         return 0
     cfg = R.mail_config(os.environ.get)
     if not os.environ.get("DATABASE_URL") or not cfg["ready"]:
