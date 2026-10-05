@@ -13,7 +13,7 @@ import datetime as dt  # noqa: E402
 import attendance as A  # noqa: E402
 import report as R  # noqa: E402
 
-START = dt.time(16, 40)   # NZ time: the first run after this sends
+START = dt.time(13, 0)   # NZ time: the first run after this sends
 CATCH_UP = dt.time(6, 0)  # GitHub sometimes starts scheduled runs hours late; a run before 6am sends yesterday's
 
 
