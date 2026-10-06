@@ -278,3 +278,14 @@ def test_passwords_that_are_shared_are_reported(monkeypatch):
     assert A.shared_passwords() == []  # the same church name under both headings is fine
     secrets["church_passwords"]["Melbourne"] = "m-admin"
     assert A.shared_passwords() == ["Melbourne church admin and Melbourne team"]
+
+
+def test_email_addresses_are_checked_in_plain_words():
+    import report as R
+    for ok in ("a@b.com", "Kelvin.M+x@Gmail.com", "x@church.org.nz"):
+        assert R.email_problem(ok) == ""
+    assert "space" in R.email_problem("a b@c.com")
+    assert "one @" in R.email_problem("a@@b.com")
+    assert "after the @" in R.email_problem("a@b")
+    assert "did you mean a@gmail.com" in R.email_problem("a@gmial.com")
+    assert R.email_problem("")

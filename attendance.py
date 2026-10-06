@@ -1941,7 +1941,7 @@ def register_editor(store):
             "type": st.column_config.SelectboxColumn("Type", options=["member", "first_timer"], required=True),
             "age_group": st.column_config.SelectboxColumn("Adult / Child", options=["Adult", "Child"], required=True),
             "phone": st.column_config.TextColumn("Phone", max_chars=30),
-            "email": st.column_config.TextColumn("Email", max_chars=120),
+            "email": st.column_config.TextColumn("Email", max_chars=120, validate=r"^$|^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$"),
             "group": st.column_config.TextColumn("Group"),
             "church": st.column_config.SelectboxColumn("Church", options=all_churches(base_store()), required=True,
                                                        help="Change this to move someone to another church"),
@@ -2031,13 +2031,18 @@ def page_members():
             group, role = a.text_input("Group"), b.text_input("Ministry / role")
             age = a.radio("Adult or child", ["Adult", "Child"], horizontal=True)
             if st.form_submit_button("Add", type="primary") and name.strip():
-                store.upsert_members([dict(full_name=" ".join(name.split()), type=kind, phone=phone.strip(),
-                                           age_group=age,
-                                           email=email.strip(), group=group.strip(), role=role.strip(), status="",
-                                           date_joined=today().isoformat() if kind == "member" else "",
-                                           first_visit=today().isoformat() if kind == "first_timer" else "",
-                                           created_at=now_iso())])
-                st.success(f"Added {name.strip()}.")
+                import report as R
+                wrong = R.email_problem(email) if email.strip() else ""
+                if wrong:
+                    st.error("Not added. " + wrong)
+                else:
+                    store.upsert_members([dict(full_name=" ".join(name.split()), type=kind, phone=phone.strip(),
+                                               age_group=age,
+                                               email=email.strip().lower(), group=group.strip(), role=role.strip(), status="",
+                                               date_joined=today().isoformat() if kind == "member" else "",
+                                               first_visit=today().isoformat() if kind == "first_timer" else "",
+                                               created_at=now_iso())])
+                    st.success(f"Added {name.strip()}.")
 
     with tab_import:
         st.markdown("Upload the CSV exports of your **General Church Register** and **First timers** sheets "
@@ -2377,7 +2382,7 @@ def overview_card(cfg: dict):
         if a.button("Save this list", key="rep_all_save", icon=":material/save:", disabled=base.demo, width="stretch"):
             good, bad = R.save_overview_recipients(base, text)
             if bad:
-                st.error("Not saved — these don't look like email addresses: " + ", ".join(bad))
+                st.error("Not saved. " + " ".join(bad))
             elif good:
                 st.success(f"Saved {len(good)} recipient{'s' if len(good) != 1 else ''}.")
             else:
@@ -2421,7 +2426,7 @@ def page_reports():
             if st.button("Save recipients", key="rep_save", icon=":material/save:", disabled=store.demo):
                 good, bad = R.save_recipients(store, text)
                 if bad:
-                    st.error("Not saved — these don't look like email addresses: " + ", ".join(bad))
+                    st.error("Not saved. " + " ".join(bad))
                 elif good:
                     st.success(f"Saved {len(good)} recipient{'s' if len(good) != 1 else ''}.")
                 else:

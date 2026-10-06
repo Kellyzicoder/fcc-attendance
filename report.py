@@ -24,6 +24,29 @@ import attendance as A
 DEFAULT_TO = ["greaterloveauckland@gmail.com"]
 APP_URL = "https://fcc-attendance.streamlit.app"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+SLIPS = {"gmial.com": "gmail.com", "gmai.com": "gmail.com", "gmail.con": "gmail.com", "gmail.co": "gmail.com",
+         "gamil.com": "gmail.com", "gnail.com": "gmail.com", "gmail.comm": "gmail.com", "hotmial.com": "hotmail.com",
+         "hotmail.con": "hotmail.com", "outlok.com": "outlook.com", "outlook.con": "outlook.com",
+         "yaho.com": "yahoo.com", "yahoo.con": "yahoo.com", "icloud.con": "icloud.com"}
+
+
+def email_problem(raw: str) -> str:
+    """What is wrong with a typed email address, in plain words; "" when it looks right. Same rules as the phone app."""
+    x = str(raw or "").strip().lower()
+    if not x:
+        return "Type an email address."
+    if re.search(r"\s", x):
+        return f"{x} has a space in it."
+    if x.count("@") != 1:
+        return f"{x} needs one @, like name@example.com."
+    name, host = x.split("@")
+    if not re.fullmatch(r"[a-z0-9._%+'-]+", name) or name.startswith(".") or name.endswith(".") or ".." in name:
+        return f"{x}: the part before the @ doesn't look right."
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}", host) or re.search(r"(^|\.)-|-(\.|$)", host):
+        return f"{x}: the part after the @ doesn't look right, e.g. gmail.com."
+    if host in SLIPS:
+        return f"{x}: did you mean {name}@{SLIPS[host]}?"
+    return ""
 
 # Email clients ignore <style> blocks and dark mode unpredictably, so everything is inline and light.
 C = dict(bg="#f3f6f8", card="#ffffff", ink="#17242e", ink2="#51616d", line="#e3e9ee", brand="#1f6f78",
@@ -64,8 +87,8 @@ def overview_recipients(base) -> list[str]:
 
 def _save(store, key: str, text: str) -> tuple[list[str], list[str]]:
     items = _split(text)
-    good = list(dict.fromkeys(e.lower() for e in items if EMAIL_RE.match(e)))
-    bad = [e for e in items if not EMAIL_RE.match(e)]
+    good = list(dict.fromkeys(e.lower() for e in items if not email_problem(e)))
+    bad = [p for p in map(email_problem, items) if p]  # one plain-words reason per wrong address
     if good and not bad:
         store.set_setting(key, ", ".join(good))
     return good, bad
