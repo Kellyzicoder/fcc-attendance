@@ -128,6 +128,15 @@ def test_whatsapp_messages_can_be_plain_text(store):
         assert "Present" in plain and "\n\n" in plain
 
 
+def test_churches_added_in_the_phone_app_show_up(store):
+    assert store.church_names() == []  # no churches table yet: nothing breaks
+    store._exec("CREATE TABLE churches (name TEXT PRIMARY KEY)")
+    store._exec("INSERT INTO churches (name) VALUES (?)", ("Brisbane",))
+    store._churches = None
+    assert "Brisbane" in A.all_churches(store)
+    assert A.all_churches(store)[0] == A.home_church()
+
+
 def test_daily_report_builds(store):
     import report as R
     r = R.build(store, dt.date.today())
