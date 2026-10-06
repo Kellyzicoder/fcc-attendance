@@ -318,6 +318,24 @@ class SqlStore:
         return val
 
     # -- reads
+    def church_names(self) -> list[str]:
+        """Churches added in the phone app's Admin page (its `churches` table). Empty if that table isn't there."""
+        import time
+        cached = getattr(self, "_churches", None)
+        if cached and time.monotonic() - cached[0] < 30:
+            return cached[1]
+        try:
+            if self.demo:
+                there = self._exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'churches'", fetch=True)
+            else:
+                there = [r for r in self._exec("SELECT to_regclass('public.churches')::text AS t", fetch=True) if r["t"]]
+            rows = self._exec("SELECT name FROM churches", fetch=True) if there else []
+            names = [n for n in (_txt(r["name"]).strip() for r in rows) if n]
+        except Exception:
+            names = []  # the list of churches still comes from Secrets and the register
+        self._churches = (time.monotonic(), names)
+        return names
+
     def list_members(self):
         def load():
             rows = self._exec("SELECT * FROM members", fetch=True)
@@ -689,7 +707,7 @@ def shared_passwords() -> list[str]:
 
 def all_churches(base) -> list[str]:
     names = {home_church(), *church_passwords(), *church_passwords("church_admin_passwords"),
-             *(church_of(m) for m in base.list_members())}
+             *base.church_names(), *(church_of(m) for m in base.list_members())}
     return [home_church()] + sorted(names - {home_church()}, key=str.lower)
 
 
