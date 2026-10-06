@@ -1,7 +1,7 @@
 """Daily attendance email for FCC: an HTML summary plus an Excel workbook, sent through Gmail.
 
 Used in two places:
-  • scripts/daily_report.py — run by GitHub Actions every day (the 1pm report);
+  • scripts/daily_report.py — run by hand from GitHub Actions (nothing is scheduled);
   • the app's "Send report now" button.
 
 Sending goes through Brevo's free email API (an API key, no Google settings); a Gmail app password also works as a
@@ -270,7 +270,7 @@ def _send_smtp(cfg: dict, to: list[str], r: dict, host: str = "smtp.gmail.com", 
 
 
 def send(store, cfg: dict, to: list[str] | None = None, kind: str = "manual", day: dt.date | None = None) -> dict:
-    """Build and send the report. Logs every attempt (so the 1pm job never double-sends). Raises on failure."""
+    """Build and send the report. Logs every attempt. Raises on failure."""
     if not cfg.get("ready"):
         raise RuntimeError("Email sending isn't set up yet (add brevo_api_key to the Secrets).")
     to = to or recipients(store)

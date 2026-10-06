@@ -14,7 +14,7 @@ missing and follow up.
 | Live | Real-time view of today's check-ins — count, first-timers, arrivals over time, latest arrivals. Refreshes itself; good on a screen during service. |
 | Insights | Attendance per service (members vs first-timers, 4-service average), first-timers per month, first-timer return rate, attendance by group. |
 | Members | The register (editable), sign-ups from the welcome form to approve, add people, import the Google Sheets CSV exports, and an **Activity** log of every change. |
-| Reports | The daily email to leaders: who gets it (add or remove addresses), a live preview, **Send report now**, the Excel attachment, and a log of every email sent. |
+| Reports | The email to leaders: who gets it (add or remove addresses), a live preview, **Send report now**, the Excel attachment, and a log of every email sent. Nothing is sent automatically. |
 | SQL | Read-only SQL queries against the database, with ready-made examples; download results. |
 
 **Who sees what.** Passwords are set in the app's Secrets:
@@ -76,19 +76,19 @@ To undo, press **Revert** on the merged pull request.
 Dark dashboard theme in the church colours (logo greens and gold). Chart colours are checked for colour-blind
 separation and contrast. The sidebar has **Layout** controls (names per row on Check-in, panel stacking).
 
-## Daily email
+## Attendance email
 
-Every day at about 1pm (NZ) a summary goes to the addresses on the Reports page (default greaterloveauckland@gmail.com):
-check-ins, who needs a follow-up call (with phone numbers), new welcome-form sign-ups, plus an Excel workbook
-(Checked in · Follow-up · Sign-ups · Services) that opens in Excel or Google Sheets.
+Nothing is sent automatically. When the admin presses **Send report now** (Dashboard or Reports), a summary goes to
+the addresses on the Reports page (default greaterloveauckland@gmail.com): check-ins, who needs a follow-up call
+(with phone numbers), new welcome-form sign-ups, plus an Excel workbook (Checked in · Follow-up · Sign-ups ·
+Services) that opens in Excel or Google Sheets. Every email is logged in `email_log`.
 
-- Scheduled by `.github/workflows/daily-report.yml` (GitHub Actions). Cron is UTC, so it tries several times across
-  NZST/NZDT; `scripts/daily_report.py` sends on the first run after 1pm NZ and logs it in `email_log`, so later
-  runs that day skip. A failed run makes GitHub email the repo owner.
-- Sent through Brevo's free email API (300/day). Secrets: in the app `brevo_api_key`, `report_sender`; in GitHub
-  Actions `DATABASE_URL`, `BREVO_API_KEY`, `REPORT_SENDER`. (A Gmail app password via `smtp_user`/`smtp_password`
-  also works as a fallback.)
-- Leaders can also press **Send report now** (Dashboard or Reports) any time, e.g. right after a service.
+- Sent through Brevo's free email API (300/day). Secrets in the app: `brevo_api_key`, `report_sender`. (A Gmail app
+  password via `smtp_user`/`smtp_password` also works as a fallback.)
+- `.github/workflows/daily-report.yml` can send the same email from GitHub, but only when someone runs it by hand
+  (Actions → *Attendance email (manual)* → Run workflow). It has no schedule. It needs the GitHub Actions secrets
+  `DATABASE_URL`, `BREVO_API_KEY`, `REPORT_SENDER`.
+- Renewing the Brevo keys: see `docs/renewing-email-keys.md`.
 
 ## Data
 

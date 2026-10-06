@@ -1400,7 +1400,8 @@ def page_dashboard():
             call = [] if df.empty else [
                 ("📞", f"{_esc(r.name)}", f"{r.phone or 'no phone'} · {r.missed} missed")
                 for r in df[df.level == "red"].head(5).itertuples()]
-            send_now_button(store, "dash_send_now")
+            if is_admin(store):  # only the admin sends the report; nothing goes out by itself
+                send_now_button(store, "dash_send_now")
             with st.popover("Summary for WhatsApp", icon=":material/chat:", width="stretch"):
                 with_names = st.checkbox("Include names", key="wa_names",
                                          help="Leave off for big group chats; turn on for the leaders' chat.")
@@ -2306,11 +2307,9 @@ REPORT_SETUP = """
    brevo_api_key = "xkeysib-…"
    report_sender = "greaterloveauckland@gmail.com"
    ```
-4. **The 1pm schedule** — github.com/Kellyzicoder/fcc-attendance → **Settings → Secrets and variables → Actions →
-   New repository secret**, add: `DATABASE_URL` (same as in the app's Secrets), `BREVO_API_KEY`, `REPORT_SENDER`.
 
 Then press **Send report now** above to test. The first one may land in *Spam* — mark it *Not spam* once.
-The daily email goes out at about 1pm NZ time; if it ever fails, GitHub emails the repo owner.
+Nothing is sent automatically: the report only goes out when the admin presses **Send report now**.
 """
 
 
@@ -2318,7 +2317,7 @@ The daily email goes out at about 1pm NZ time; if it ever fails, GitHub emails t
 def page_reports():
     import report as R
     store = get_store()
-    header("Reports", "The 1pm email to church leaders — who gets it, what's in it, and send it now", store)
+    header("Reports", "The email to church leaders — who gets it, what's in it, and send it", store)
     if not gate(store, hq=True):
         return
     demo_note(store)
@@ -2327,8 +2326,8 @@ def page_reports():
     with left:
         with card("rep_send"):
             st.markdown("**Send the report**")
-            st.caption("Goes out automatically every day at about 1pm (NZ). Use this to send the latest numbers any time — "
-                       "e.g. straight after the service, before 6pm.")
+            st.caption("Nothing is sent automatically. Press the button to email the latest numbers to everyone on the "
+                       "list, e.g. straight after the service.")
             if not cfg["ready"]:
                 st.warning("Email isn't set up yet — see the steps below.", icon=":material/settings:")
             send_now_button(store, "rep_send_now", "Send report now", full=True)
@@ -2353,7 +2352,7 @@ def page_reports():
             else:
                 st.dataframe(pd.DataFrame({
                     "Sent": _parse_times([h["sent_at"] for h in hist]).dt.strftime("%a %d %b %H:%M"),
-                    "Type": ["1pm (automatic)" if h["kind"] == "daily" else "Sent from the app" for h in hist],
+                    "Type": ["Automatic (old schedule)" if h["kind"] == "daily" else "Sent by the admin" for h in hist],
                     "": ["✅ Sent" if h["ok"] else "❌ Failed" for h in hist],
                     "Details": [h["detail"] for h in hist]}), hide_index=True, width="stretch")
         with st.expander("Set up email sending", icon=":material/settings:", expanded=not cfg["ready"]):
