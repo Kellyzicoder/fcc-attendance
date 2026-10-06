@@ -319,22 +319,7 @@ class SqlStore:
 
     # -- reads
     def church_names(self) -> list[str]:
-        """Churches added in the phone app's Admin page (its `churches` table). Empty if that table isn't there."""
-        import time
-        cached = getattr(self, "_churches", None)
-        if cached and time.monotonic() - cached[0] < 30:
-            return cached[1]
-        try:
-            if self.demo:
-                there = self._exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'churches'", fetch=True)
-            else:
-                there = [r for r in self._exec("SELECT to_regclass('public.churches')::text AS t", fetch=True) if r["t"]]
-            rows = self._exec("SELECT name FROM churches", fetch=True) if there else []
-            names = [n for n in (_txt(r["name"]).strip() for r in rows) if n]
-        except Exception:
-            names = []  # the list of churches still comes from Secrets and the register
-        self._churches = (time.monotonic(), names)
-        return names
+        return church_names(self)
 
     def list_members(self):
         def load():
@@ -705,9 +690,35 @@ def shared_passwords() -> list[str]:
     return clash
 
 
+def church_names(base) -> list[str]:
+    """Churches added in the phone app's Admin page (its `churches` table). Empty if that table isn't there.
+
+    A plain function, not a method: the shared database connection is kept between updates of the app, so right
+    after an update it can still be an object made by the previous version, which would not have a new method.
+    """
+    import time
+    cached = getattr(base, "_churches", None)
+    if cached and time.monotonic() - cached[0] < 30:
+        return cached[1]
+    try:
+        if base.demo:
+            there = base._exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'churches'", fetch=True)
+        else:
+            there = [r for r in base._exec("SELECT to_regclass('public.churches')::text AS t", fetch=True) if r["t"]]
+        rows = base._exec("SELECT name FROM churches", fetch=True) if there else []
+        names = [n for n in (_txt(r["name"]).strip() for r in rows) if n]
+    except Exception:
+        names = []  # the list of churches still comes from Secrets and the register
+    try:
+        base._churches = (time.monotonic(), names)
+    except Exception:
+        pass
+    return names
+
+
 def all_churches(base) -> list[str]:
     names = {home_church(), *church_passwords(), *church_passwords("church_admin_passwords"),
-             *base.church_names(), *(church_of(m) for m in base.list_members())}
+             *church_names(base), *(church_of(m) for m in base.list_members())}
     return [home_church()] + sorted(names - {home_church()}, key=str.lower)
 
 
