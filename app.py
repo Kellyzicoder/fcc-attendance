@@ -1,6 +1,6 @@
 """FCC Attendance Tracker — Streamlit app for Favourite Child Church.
 
-Pages (sidebar): Dashboard (home) · Follow-up & Check-in · Live · Insights; admins also get Members · Reports · SQL.
+Pages (sidebar): Dashboard (home) · Follow-up & Check-in · Live · Insights; admins also get Members · Reports.
 All data lives in Postgres (Supabase) via `database_url` in Streamlit secrets; see attendance.py.
 """
 from pathlib import Path
@@ -158,7 +158,6 @@ else:
             overview,
             st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members"),
             st.Page(A.page_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports"),
-            st.Page(A.page_sql, title="SQL", icon=":material/database:", url_path="sql"),
         ]
     elif who == "lead":  # a church's own admin: their Members page, nothing from other churches
         pages["Admin"] = [st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members"),

@@ -15,15 +15,14 @@ missing and follow up.
 | Insights | Attendance per service (members vs first-timers, 4-service average), first-timers per month, first-timer return rate, attendance by group. |
 | Members | The register (editable), sign-ups from the welcome form to approve, add people, import the Google Sheets CSV exports, and an **Activity** log of every change. |
 | Reports | The email to leaders: who gets it (add or remove addresses), a live preview, **Send report now**, the Excel attachment, and a log of every email sent. Nothing is sent automatically. |
-| SQL | Read-only SQL queries against the database, with ready-made examples; download results. |
 
 **Who sees what.** Passwords are set in the app's Secrets:
 
 | Secret | Who | Sees |
 |---|---|---|
-| `admin_password` | Admin | Every church with names (pick the church in the sidebar), the **All churches** overview, Members, Reports and SQL |
+| `admin_password` | Admin | Every church with names (pick the church in the sidebar), the **All churches** overview (where a branch can also be renamed), Members and Reports |
 | `bishop_password` | Bishop | The **All churches** overview only: numbers for every branch, never names or phone numbers |
-| `[church_admin_passwords]` (one line per church, e.g. `Sydney = "…"`) | A church's admin: its pastor and follow-up leads | Their own church only, including its Members page (register, add people, activity) and its Reports page (their church's email list and Send report now). No other church, no SQL |
+| `[church_admin_passwords]` (one line per church, e.g. `Sydney = "…"`) | A church's admin: its pastor and follow-up leads | Their own church only, including its Members page (register, add people, activity) and its Reports page (their church's email list and Send report now). No other church |
 | `[church_passwords]` (one line per branch, e.g. `Sydney = "…"`) | A branch's team | Their own church only |
 | `attendance_password` | The home church's team | The home church only (`home_church`, default Auckland) |
 
@@ -104,7 +103,7 @@ Stored in a **Postgres** database (Supabase) — never in this repo. Tables:
 - `registrations` — sign-ups from the [welcome form](https://github.com/Kellyzicoder/fcc-welcome), approved under *Members → Sign-ups*
 
 Until `database_url` is set in the app's Streamlit **Secrets**, the pages run on a SQLite demo database with invented
-names. Setup steps are in the app under *Members → Setup*. Query the data from the SQL page, Supabase's SQL editor,
+names. Setup steps are in the app under *Members → Setup*. Query the data from Supabase's SQL editor,
 or Python (`pandas.read_sql`).
 
 CSV files and connection strings are blocked by `.gitignore`; don't commit them — this repo is public.
