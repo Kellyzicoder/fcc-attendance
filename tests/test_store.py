@@ -117,6 +117,26 @@ def test_whatsapp_summary_hides_names_unless_asked(store):
     assert "https://example.com/live" in A.whatsapp_summary(store, link="https://example.com/live")
 
 
+def test_whatsapp_messages_can_be_plain_text(store):
+    import re
+    emoji = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]")
+    rows = A.church_numbers(store)
+    for plain, rich in ((A.whatsapp_summary(store, link="https://example.com/live", emoji=False),
+                         A.whatsapp_summary(store, link="https://example.com/live")),
+                        (A.whatsapp_overview(rows, emoji=False), A.whatsapp_overview(rows))):
+        assert emoji.search(rich) and not emoji.search(plain)
+        assert "Present" in plain and "\n\n" in plain
+
+
+def test_churches_added_in_the_phone_app_show_up(store):
+    assert store.church_names() == []  # no churches table yet: nothing breaks
+    store._exec("CREATE TABLE churches (name TEXT PRIMARY KEY)")
+    store._exec("INSERT INTO churches (name) VALUES (?)", ("Brisbane",))
+    store._churches = None
+    assert "Brisbane" in A.all_churches(store)
+    assert A.all_churches(store)[0] == A.home_church()
+
+
 def test_daily_report_builds(store):
     import report as R
     r = R.build(store, dt.date.today())

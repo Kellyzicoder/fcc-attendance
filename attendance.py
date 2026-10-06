@@ -318,6 +318,24 @@ class SqlStore:
         return val
 
     # -- reads
+    def church_names(self) -> list[str]:
+        """Churches added in the phone app's Admin page (its `churches` table). Empty if that table isn't there."""
+        import time
+        cached = getattr(self, "_churches", None)
+        if cached and time.monotonic() - cached[0] < 30:
+            return cached[1]
+        try:
+            if self.demo:
+                there = self._exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'churches'", fetch=True)
+            else:
+                there = [r for r in self._exec("SELECT to_regclass('public.churches')::text AS t", fetch=True) if r["t"]]
+            rows = self._exec("SELECT name FROM churches", fetch=True) if there else []
+            names = [n for n in (_txt(r["name"]).strip() for r in rows) if n]
+        except Exception:
+            names = []  # the list of churches still comes from Secrets and the register
+        self._churches = (time.monotonic(), names)
+        return names
+
     def list_members(self):
         def load():
             rows = self._exec("SELECT * FROM members", fetch=True)
@@ -689,7 +707,7 @@ def shared_passwords() -> list[str]:
 
 def all_churches(base) -> list[str]:
     names = {home_church(), *church_passwords(), *church_passwords("church_admin_passwords"),
-             *(church_of(m) for m in base.list_members())}
+             *base.church_names(), *(church_of(m) for m in base.list_members())}
     return [home_church()] + sorted(names - {home_church()}, key=str.lower)
 
 
@@ -1376,7 +1394,8 @@ def page_dashboard():
                 with_names = st.checkbox("Include names", key="wa_names",
                                          help="Leave off for big group chats; turn on for the leaders' chat.")
                 link = st.text_input("Livestream link (optional)", key="wa_link", placeholder="https://…")
-                st.code(whatsapp_summary(store, with_names, link), language=None, wrap_lines=True)
+                emoji = st.toggle("Emojis", value=True, key="wa_emoji", help="Turn off for a plain-text message.")
+                st.code(whatsapp_summary(store, with_names, link, emoji), language=None, wrap_lines=True)
                 st.caption("Tap the copy icon at the top right of the box, then paste into WhatsApp.")
             st.html(feed("Notifications", notes, "All caught up")
                     + feed("Latest check-ins" + ("" if here else f" · {last_day:%d %b}"), act, "No check-ins yet")
@@ -1409,16 +1428,19 @@ def church_numbers(base) -> list[dict]:
     return rows
 
 
-def whatsapp_overview(rows: list[dict]) -> str:
-    lines = [f"*FCC · all churches · {today():%a %d %b %Y}* ⛪",
-             f"✅ Present: *{sum(r['present'] for r in rows)}* "
-             f"(🧑 {sum(r['adults'] for r in rows)} adults · 🧒 {sum(r['kids'] for r in rows)} kids)",
-             f"👋 First-timers: *{sum(r['first'] for r in rows)}*", ""]
+def whatsapp_overview(rows: list[dict], emoji: bool = True) -> str:
+    lines = ["*FCC · all churches*" + (" ⛪" if emoji else ""), f"{today():%a %d %b %Y}", "",
+             ("✅", f"Present: *{sum(r['present'] for r in rows)}*"),
+             ("🧑", f"Adults: *{sum(r['adults'] for r in rows)}*"),
+             ("🧒", f"Kids: *{sum(r['kids'] for r in rows)}*"),
+             ("👋", f"First-timers: *{sum(r['first'] for r in rows)}*")]
     for r in rows:
         when = f" ({fmt_date(r['date'], '%d %b', '')})" if r["date"] else ""
-        lines.append(f"*{r['church']}*{when}: {r['present']} present · {r['adults']} adults · {r['kids']} kids · "
-                     f"{r['first']} first-timers · 🔴 {r['red']} 🟡 {r['yellow']}")
-    return "\n".join(lines)
+        flags = f"🔴 {r['red']} · 🟡 {r['yellow']}" if emoji else f"Red {r['red']} · Yellow {r['yellow']}"
+        lines += ["", f"*{r['church']}*{when}",
+                  f"Present {r['present']} · Adults {r['adults']} · Kids {r['kids']}",
+                  f"First-timers {r['first']} · {flags}"]
+    return _wa(lines, emoji)
 
 
 @db_safe
@@ -1465,7 +1487,8 @@ def page_overview():
     with card("ov_chart"):
         _plot(fig, 320, "People present at each church's latest service", key="ov_bar")
     with st.expander("Summary to send by WhatsApp (numbers only)", icon=":material/chat:"):
-        st.code(whatsapp_overview(rows), language=None, wrap_lines=True)
+        emoji = st.toggle("Emojis", value=True, key="ov_emoji", help="Turn off for a plain-text message.")
+        st.code(whatsapp_overview(rows, emoji), language=None, wrap_lines=True)
         st.caption("Tap the copy icon at the top right of the box, then paste into WhatsApp.")
 
 
@@ -1600,7 +1623,8 @@ def pastors_panel(store):
         st.dataframe(table, hide_index=True, width="stretch", height=min(38 * (len(table) + 1) + 4, 460))
     if who != "Not assigned yet":
         with st.expander("Message for this pastor (copy for WhatsApp)", icon=":material/chat:"):
-            st.code(whatsapp_pastor(who, mine, past[-1] if past else None), language=None, wrap_lines=True)
+            emoji = st.toggle("Emojis", value=True, key="pastor_emoji", help="Turn off for a plain-text message.")
+            st.code(whatsapp_pastor(who, mine, past[-1] if past else None, emoji), language=None, wrap_lines=True)
 
 
 def archive_panel(store):
@@ -1629,7 +1653,13 @@ def _names(rows, limit: int = 12) -> str:
     return ", ".join(names[:limit]) + (f" +{len(names) - limit} more" if len(names) > limit else "")
 
 
-def whatsapp_summary(store, names: bool = False, link: str = "") -> str:
+def _wa(lines: list, emoji: bool = True) -> str:
+    """Join message lines. Each line is text, or (emoji, text); the emoji is dropped when emojis are off."""
+    out = [(f"{ln[0]} {ln[1]}" if emoji else ln[1]) if isinstance(ln, tuple) else ln for ln in lines]
+    return "\n".join(out).strip()
+
+
+def whatsapp_summary(store, names: bool = False, link: str = "", emoji: bool = True) -> str:
     """This week's numbers as a WhatsApp message (*bold* is WhatsApp's own formatting)."""
     members, services = store.list_members(), store.list_services()
     mem = {m["id"]: m for m in members}
@@ -1645,32 +1675,43 @@ def whatsapp_summary(store, names: bool = False, link: str = "") -> str:
     df = missed_streaks(members, services)
     red = df[df.level == "red"] if not df.empty else df
     yellow = df[df.level == "yellow"] if not df.empty else df
-    arrow = "" if not change else f" ({'↑' if change > 0 else '↓'} {abs(change)} on last time)"
-    lines = [f"*FCC {last.get('name') or 'Service'} · {day:%a %d %b %Y}* ⛪",
-             f"✅ Present: *{len(p)}*{arrow}",
-             f"👋 First-timers: *{len(first)}*" + (f" ({_names(first)})" if names and first else ""),
-             "🧑 Adults: *{}* · 🧒 Kids: *{}*".format(*split_ages(list(p), mem)),
-             f"🔴 Missed {RED_AT}+ in a row: *{len(red)}*" + (f" ({_names(red.name)})" if names and len(red) else ""),
-             f"🟡 Missed {YELLOW_AT}–{RED_AT - 1} in a row: *{len(yellow)}*"
-             + (f" ({_names(yellow.name)})" if names and len(yellow) else "")]
+    moved = "" if not change else f" ({'up' if change > 0 else 'down'} {abs(change)} on last time)"
+    adults, kids = split_ages(list(p), mem)
+    lines = [f"*FCC {last.get('name') or 'Service'}*" + (" ⛪" if emoji else ""), f"{day:%a %d %b %Y}", "",
+             ("✅", f"Present: *{len(p)}*{moved}"),
+             ("🧑", f"Adults: *{adults}*"),
+             ("🧒", f"Kids: *{kids}*"),
+             ("👋", f"First-timers: *{len(first)}*")]
+    if names and first:
+        lines.append(_names(first))
+    lines += ["", "*Follow-up*", ("🔴", f"Missed {RED_AT}+ in a row: *{len(red)}*")]
+    if names and len(red):
+        lines.append(_names(red.name))
+    lines.append(("🟡", f"Missed {YELLOW_AT}–{RED_AT - 1} in a row: *{len(yellow)}*"))
+    if names and len(yellow):
+        lines.append(_names(yellow.name))
     if link.strip():
-        lines.append(f"📺 Livestream: {link.strip()}")
-    return "\n".join(lines)
+        lines += ["", ("📺", f"Livestream: {link.strip()}")]
+    return _wa(lines, emoji)
 
 
-def whatsapp_pastor(pastor: str, mine: pd.DataFrame, last: dict | None) -> str:
-    day = f" · {dt.date.fromisoformat(last['date']):%a %d %b}" if last else ""
+def whatsapp_pastor(pastor: str, mine: pd.DataFrame, last: dict | None, emoji: bool = True) -> str:
     came, missed = mine[mine.here], mine[~mine.here]
     need = mine[mine.level != "ok"]
-    lines = [f"*{pastor} · your people{day}* ⛪", f"✅ Came: *{len(came)} of {len(mine)}*"]
+    lines = [f"*{pastor} · your people*" + (" ⛪" if emoji else "")]
+    if last:
+        lines.append(f"{dt.date.fromisoformat(last['date']):%a %d %b %Y}")
+    lines += ["", ("✅", f"Came: *{len(came)} of {len(mine)}*")]
     if len(came):
         lines.append(_names(came.name, 20))
     if len(missed):
-        lines.append(f"🙏 Not there: {_names(missed.name, 20)}")
+        lines += ["", ("🙏", "Not there:"), _names(missed.name, 20)]
     if len(need):
-        lines.append("📞 Please call: " + _names(
-            [f"{r.name} ({r.missed} missed{', ' + r.phone if r.phone else ''})" for r in need.itertuples()], 20))
-    return "\n".join(lines)
+        rows = [f"- {r.name} ({r.missed} missed{', ' + r.phone if r.phone else ''})" for r in need.itertuples()]
+        lines += ["", ("📞", "Please call:"), *rows[:20]]
+        if len(rows) > 20:
+            lines.append(f"+{len(rows) - 20} more")
+    return _wa(lines, emoji)
 
 
 def _xlsx(table: pd.DataFrame, title: str = "List") -> bytes:
