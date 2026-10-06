@@ -161,6 +161,7 @@ else:
             st.Page(A.page_sql, title="SQL", icon=":material/database:", url_path="sql"),
         ]
     elif who == "lead":  # a church's own admin: their Members page, nothing from other churches
-        pages["Admin"] = [st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members")]
+        pages["Admin"] = [st.Page(A.page_members, title="Members", icon=":material/badge:", url_path="members"),
+                          st.Page(A.page_reports, title="Reports", icon=":material/forward_to_inbox:", url_path="reports")]
 A.account_box(store)  # before the pages run, so the church an admin picks applies straight away
 st.navigation(pages).run()

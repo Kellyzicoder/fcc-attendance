@@ -31,20 +31,53 @@ C = dict(bg="#f3f6f8", card="#ffffff", ink="#17242e", ink2="#51616d", line="#e3e
 
 
 # ---------------------------------------------------------------- recipients
+# Each church keeps its own list, so a branch's report (which has names and phone numbers) only ever goes to the
+# people that branch chose. The home church uses the original key; "*" is the list for the all-churches numbers.
+OVERVIEW_KEY = "report_recipients:*"
+
+
+def church_of(store) -> str:
+    return getattr(store, "church", "") or A.home_church()
+
+
+def _is_home(store) -> bool:
+    return church_of(store) == A.home_church()
+
+
+def _key(store) -> str:
+    return "report_recipients" if _is_home(store) else f"report_recipients:{church_of(store)}"
+
+
+def _split(raw: str) -> list[str]:
+    return [e.strip() for e in re.split(r"[,\s;]+", raw or "") if e.strip()]
+
+
 def recipients(store) -> list[str]:
-    raw = store.get_setting("report_recipients", "")
-    emails = [e.strip() for e in re.split(r"[,\s;]+", raw) if e.strip()]
-    return emails or list(DEFAULT_TO)
+    """Who gets this church's report. A branch with no list yet has nobody: it never falls back to another church's."""
+    return _split(store.get_setting(_key(store), "")) or (list(DEFAULT_TO) if _is_home(store) else [])
+
+
+def overview_recipients(base) -> list[str]:
+    """Who gets the all-churches numbers. Until a list is saved, the home church's list is used."""
+    return _split(base.get_setting(OVERVIEW_KEY, "")) or _split(base.get_setting("report_recipients", "")) or list(DEFAULT_TO)
+
+
+def _save(store, key: str, text: str) -> tuple[list[str], list[str]]:
+    items = _split(text)
+    good = list(dict.fromkeys(e.lower() for e in items if EMAIL_RE.match(e)))
+    bad = [e for e in items if not EMAIL_RE.match(e)]
+    if good and not bad:
+        store.set_setting(key, ", ".join(good))
+    return good, bad
 
 
 def save_recipients(store, text: str) -> tuple[list[str], list[str]]:
     """Returns (saved, rejected)."""
-    items = [e.strip() for e in re.split(r"[,\s;]+", text) if e.strip()]
-    good = list(dict.fromkeys(e.lower() for e in items if EMAIL_RE.match(e)))
-    bad = [e for e in items if not EMAIL_RE.match(e)]
-    if good and not bad:
-        store.set_setting("report_recipients", ", ".join(good))
-    return good, bad
+    return _save(store, _key(store), text)
+
+
+def save_overview_recipients(base, text: str) -> tuple[list[str], list[str]]:
+    return _save(base, OVERVIEW_KEY, text)
 
 
 # ---------------------------------------------------------------- data
@@ -181,7 +214,7 @@ def build(store, day: dt.date | None = None) -> dict:
     count = (f"{n} present" if today_svc else
              f"no service today (last: {dt.date.fromisoformat(shown['date']):%a %d %b}, {n} present)" if shown
              else "no services yet")
-    subject = (f"FCC attendance · {day:%a %d %b} · {count} · {need} to follow up"
+    subject = (f"FCC {church_of(store)} attendance · {day:%a %d %b} · {count} · {need} to follow up"
                + (f" · {len(d['signups'])} new sign-up{'s' if len(d['signups']) != 1 else ''}" if d["signups"] else ""))
     svc_label = (f"{dt.date.fromisoformat(shown['date']):%a %d %b}" if shown else "")
 
@@ -197,7 +230,7 @@ def build(store, day: dt.date | None = None) -> dict:
         f'<tr><td style="padding:0 0 16px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
         f'style="background:{C["brand"]};border-radius:14px"><tr><td style="padding:20px 22px;color:#ffffff">'
         f'<div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#ffcf00;font-weight:700">'
-        f'Favourite Child Church · Attendance</div>'
+        f'Favourite Child Church · {_e(church_of(store))} · Attendance</div>'
         f'<div style="font-size:22px;font-weight:800;margin-top:4px">{_e(headline)}</div>'
         f'<div style="font-size:14px;opacity:.9;margin-top:4px">{_e(when)}</div></td></tr></table></td></tr>'
         f'<tr><td style="padding:0 0 10px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{tiles}'
@@ -274,7 +307,14 @@ def send(store, cfg: dict, to: list[str] | None = None, kind: str = "manual", da
     if not cfg.get("ready"):
         raise RuntimeError("Email sending isn't set up yet (add brevo_api_key to the Secrets).")
     to = to or recipients(store)
+    if not to:
+        raise RuntimeError(f"Nobody is on the list for {church_of(store)} yet. Add at least one email address under Reports first.")
+    kind = kind if _is_home(store) else f"{kind}:{church_of(store)}"  # so each church only sees its own emails in the log
     r = build(store, day)
+    return _deliver(store, cfg, to, r, kind)
+
+
+def _deliver(store, cfg: dict, to: list[str], r: dict, kind: str) -> dict:
     try:
         (_send_brevo if cfg.get("brevo_api_key") else _send_smtp)(cfg, to, r)
     except Exception as e:
@@ -282,3 +322,53 @@ def send(store, cfg: dict, to: list[str] | None = None, kind: str = "manual", da
         raise
     store.log_email(kind, r["day"].isoformat(), to, True, r["subject"])
     return dict(to=to, subject=r["subject"])
+
+
+# ---------------------------------------------------------------- all churches: numbers only
+def build_overview(base) -> dict:
+    """One email with every church's numbers side by side. No names or phone numbers."""
+    rows, day = A.church_numbers(base), A.today()
+    tot = lambda k: sum(r[k] for r in rows)  # noqa: E731
+    table = [{"Church": r["church"], "Latest service": A.fmt_date(r["date"], "%a %d %b", "None yet"), "Present": r["present"],
+              "Adults": r["adults"], "Kids": r["kids"], "First-timers": r["first"], "On the register": r["register"],
+              "Red": r["red"], "Yellow": r["yellow"], "Missed this service": r["blue"]} for r in rows]
+    cols = list(table[0]) if table else ["Church"]
+    headline = f"{tot('present')} present across {len(rows)} church{'es' if len(rows) != 1 else ''}"
+    subject = f"FCC all churches · {day:%a %d %b} · {headline} · {tot('red') + tot('yellow')} to follow up"
+    tiles = ("<tr>" + _tile("Present", tot("present"), C["green"]) + _tile("Adults", tot("adults"), C["brand"])
+             + _tile("Kids", tot("kids"), C["blue"]) + _tile("Need a call", tot("red") + tot("yellow"), C["red"]) + "</tr>")
+    body = (
+        f'<!doctype html><html><body style="margin:0;padding:0;background:{C["bg"]};font-family:Arial,Helvetica,sans-serif;'
+        f'color:{C["ink"]}"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:{C["bg"]}">'
+        f'<tr><td align="center" style="padding:20px 12px"><table role="presentation" width="640" cellspacing="0" '
+        f'cellpadding="0" style="max-width:640px;width:100%">'
+        f'<tr><td style="padding:0 0 16px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
+        f'style="background:{C["brand"]};border-radius:14px"><tr><td style="padding:20px 22px;color:#ffffff">'
+        f'<div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#ffcf00;font-weight:700">'
+        f'Favourite Child Church · All churches</div>'
+        f'<div style="font-size:22px;font-weight:800;margin-top:4px">{_e(headline)}</div>'
+        f'<div style="font-size:14px;opacity:.9;margin-top:4px">{day:%A %d %B %Y} · each church\'s latest service</div></td></tr></table></td></tr>'
+        f'<tr><td style="padding:0 0 10px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">{tiles}'
+        f"</table></td></tr>"
+        + _section("Church by church", _table(table, ["Church", "Latest service", "Present", "Adults", "Kids", "First-timers", "Red", "Yellow"],
+                                             "No churches yet.", limit=60))
+        + f'<tr><td style="padding:4px 4px 0;font-size:13px;color:{C["ink2"]};line-height:1.5">'
+          f'Numbers only: this email has no names or phone numbers. The same table is attached as an Excel file. '
+          f'Live dashboard: <a href="{APP_URL}" style="color:{C["brand"]}">{APP_URL.replace("https://", "")}</a>'
+          f"</td></tr></table></td></tr></table></body></html>")
+    text = (f"{headline}\n{day:%A %d %B %Y}\n\n"
+            + "".join(f"  - {r['Church']}: {r['Present']} present ({r['Adults']} adults, {r['Kids']} kids), "
+                      f"{r['First-timers']} first-timers, red {r['Red']}, yellow {r['Yellow']}\n" for r in table)
+            + f"\nDashboard: {APP_URL}\n")
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        pd.DataFrame(table, columns=cols).to_excel(xw, sheet_name="All churches", index=False)
+    return dict(subject=subject, html=body, text=text, xlsx=buf.getvalue(),
+                filename=f"FCC-all-churches-{day.isoformat()}.xlsx", day=day)
+
+
+def send_overview(base, cfg: dict, to: list[str] | None = None) -> dict:
+    """Email the all-churches numbers. Logs every attempt. Raises on failure."""
+    if not cfg.get("ready"):
+        raise RuntimeError("Email sending isn't set up yet (add brevo_api_key to the Secrets).")
+    return _deliver(base, cfg, to or overview_recipients(base), build_overview(base), "overview")

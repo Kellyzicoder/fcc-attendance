@@ -770,6 +770,13 @@ class ChurchStore:
     def count_pending(self) -> int:
         return self._base.count_pending() if self.church == home_church() else 0
 
+    def email_history(self, limit: int = 15):
+        """Only this church's emails: a branch's are logged as kind 'manual:<church>', the home church's without one."""
+        home, mine = self.church == home_church(), ":" + self.church
+        rows = [r for r in self._base.email_history(200)
+                if ((":" not in r["kind"] and r["kind"] != "overview") if home else r["kind"].endswith(mine))]
+        return rows[:limit]
+
     def activity(self, day: str | None = None, limit: int = 300):
         ids, home = self._ids(), self.church == home_church()
         return [r for r in self._base.activity(day, limit) if r["member_id"] in ids or (not r["member_id"] and home)]
@@ -1400,7 +1407,7 @@ def page_dashboard():
             call = [] if df.empty else [
                 ("📞", f"{_esc(r.name)}", f"{r.phone or 'no phone'} · {r.missed} missed")
                 for r in df[df.level == "red"].head(5).itertuples()]
-            if is_admin(store):  # only the admin sends the report; nothing goes out by itself
+            if can_manage(store):  # the admin or this church's own admin sends the report; nothing goes out by itself
                 send_now_button(store, "dash_send_now")
             with st.popover("Summary for WhatsApp", icon=":material/chat:", width="stretch"):
                 with_names = st.checkbox("Include names", key="wa_names",
@@ -2313,26 +2320,61 @@ Nothing is sent automatically: the report only goes out when the admin presses *
 """
 
 
+def overview_card(cfg: dict):
+    """HQ only: email every church's numbers in one go (no names), to its own list of people."""
+    import report as R
+    base = base_store()
+    with card("rep_all"):
+        st.markdown("**All churches in one email**")
+        st.caption("Every church's numbers side by side: present, adults, kids, first-timers, red and yellow. "
+                   "No names or phone numbers. To send one church's full report, pick that church in the sidebar.")
+        text = st.text_area("Who gets the all-churches numbers (one per line)", "\n".join(R.overview_recipients(base)),
+                            height=100, key="rep_all_to", disabled=base.demo)
+        last = [h for h in base.email_history(200) if h["kind"] == "overview" and h["ok"]][:1]
+        if last:
+            st.caption(f"Last sent {_parse_times([last[0]['sent_at']]).dt.strftime('%a %d %b %H:%M').iloc[0]}.")
+        a, b = st.columns(2)
+        if a.button("Save this list", key="rep_all_save", icon=":material/save:", disabled=base.demo, width="stretch"):
+            good, bad = R.save_overview_recipients(base, text)
+            if bad:
+                st.error("Not saved — these don't look like email addresses: " + ", ".join(bad))
+            elif good:
+                st.success(f"Saved {len(good)} recipient{'s' if len(good) != 1 else ''}.")
+            else:
+                st.error("Add at least one email address.")
+        if b.button("Send all churches now", key="rep_all_send", icon=":material/public:", type="primary", width="stretch",
+                    disabled=base.demo or not cfg["ready"]):
+            with st.spinner("Sending…"):
+                try:
+                    out = R.send_overview(base, cfg)
+                    st.toast(f"All-churches numbers sent to {', '.join(out['to'])}", icon=":material/mark_email_read:")
+                except Exception as e:
+                    st.error(f"Couldn't send the email: {e}", icon=":material/error:")
+
+
 @db_safe
 def page_reports():
     import report as R
     store = get_store()
-    header("Reports", "The email to church leaders — who gets it, what's in it, and send it", store)
-    if not gate(store, hq=True):
+    header("Reports", f"The {store.church} email to its leaders — who gets it, what's in it, and send it", store)
+    if not gate(store, admin=True):
         return
+    hq = is_admin(store)
     demo_note(store)
     cfg = _mail_cfg()
     left, right = st.columns([1, 1.4], gap="medium")
     with left:
         with card("rep_send"):
             st.markdown("**Send the report**")
-            st.caption("Nothing is sent automatically. Press the button to email the latest numbers to everyone on the "
-                       "list, e.g. straight after the service.")
+            st.caption(f"Nothing is sent automatically. Press the button to email {store.church}'s latest numbers and "
+                       "follow-up list to everyone on its list, e.g. straight after the service for the workers' meeting.")
             if not cfg["ready"]:
                 st.warning("Email isn't set up yet — see the steps below.", icon=":material/settings:")
             send_now_button(store, "rep_send_now", "Send report now", full=True)
         with card("rep_to"):
-            st.markdown("**Who gets it**")
+            st.markdown(f"**Who gets {store.church}'s report**")
+            st.caption("This list belongs to this church only. The report has names and phone numbers, so add only "
+                       "its pastor and leaders.")
             current = R.recipients(store)
             text = st.text_area("Email addresses (one per line)", "\n".join(current), height=130, key="rep_to_text",
                                 disabled=store.demo)
@@ -2352,11 +2394,13 @@ def page_reports():
             else:
                 st.dataframe(pd.DataFrame({
                     "Sent": _parse_times([h["sent_at"] for h in hist]).dt.strftime("%a %d %b %H:%M"),
-                    "Type": ["Automatic (old schedule)" if h["kind"] == "daily" else "Sent by the admin" for h in hist],
+                    "Type": ["Automatic (old schedule)" if h["kind"] == "daily" else "Sent from the app" for h in hist],
                     "": ["✅ Sent" if h["ok"] else "❌ Failed" for h in hist],
                     "Details": [h["detail"] for h in hist]}), hide_index=True, width="stretch")
-        with st.expander("Set up email sending", icon=":material/settings:", expanded=not cfg["ready"]):
-            st.markdown(REPORT_SETUP)
+        if hq:
+            overview_card(cfg)
+            with st.expander("Set up email sending", icon=":material/settings:", expanded=not cfg["ready"]):
+                st.markdown(REPORT_SETUP)
     with right, card("rep_preview"):
         r = R.build(store)
         st.markdown(f"**Preview** · {r['subject']}")

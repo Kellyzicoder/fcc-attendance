@@ -23,7 +23,7 @@ missing and follow up.
 |---|---|---|
 | `admin_password` | Admin | Every church with names (pick the church in the sidebar), the **All churches** overview, Members, Reports and SQL |
 | `bishop_password` | Bishop | The **All churches** overview only: numbers for every branch, never names or phone numbers |
-| `[church_admin_passwords]` (one line per church, e.g. `Sydney = "…"`) | A church's admin: its pastor and follow-up leads | Their own church only, including its Members page (register, add people, activity). No other church, no Reports or SQL |
+| `[church_admin_passwords]` (one line per church, e.g. `Sydney = "…"`) | A church's admin: its pastor and follow-up leads | Their own church only, including its Members page (register, add people, activity) and its Reports page (their church's email list and Send report now). No other church, no SQL |
 | `[church_passwords]` (one line per branch, e.g. `Sydney = "…"`) | A branch's team | Their own church only |
 | `attendance_password` | The home church's team | The home church only (`home_church`, default Auckland) |
 
@@ -78,10 +78,13 @@ separation and contrast. The sidebar has **Layout** controls (names per row on C
 
 ## Attendance email
 
-Nothing is sent automatically. When the admin presses **Send report now** (Dashboard or Reports), a summary goes to
-the addresses on the Reports page (default greaterloveauckland@gmail.com): check-ins, who needs a follow-up call
+Nothing is sent automatically. Each church has its own list of addresses on its Reports page. When that church's
+admin (or the HQ admin, with the church picked in the sidebar) presses **Send report now**, a summary of that church
+goes to its list: check-ins, who needs a follow-up call
 (with phone numbers), new welcome-form sign-ups, plus an Excel workbook (Checked in · Follow-up · Sign-ups ·
-Services) that opens in Excel or Google Sheets. Every email is logged in `email_log`.
+Services) that opens in Excel or Google Sheets. Every email is logged in `email_log`, and each church only sees its
+own. A branch with no list yet sends to nobody; it never falls back to another church's list. The HQ admin can also
+send **All churches in one email**: every church's numbers side by side, with no names.
 
 - Sent through Brevo's free email API (300/day). Secrets in the app: `brevo_api_key`, `report_sender`. (A Gmail app
   password via `smtp_user`/`smtp_password` also works as a fallback.)
