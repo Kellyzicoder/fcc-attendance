@@ -168,6 +168,23 @@ def test_each_church_has_its_own_report_list_and_log(store):
         R.send(empty, cfg)
 
 
+def test_renaming_a_church_moves_everything_with_it(store):
+    import report as R
+    old = next(c for c in A.all_churches(store) if c != A.home_church())
+    people = {m["id"] for m in A.ChurchStore(store, old).list_members()}
+    assert people
+    R.save_recipients(A.ChurchStore(store, old), "pastor@branch.example")
+    assert A.rename_church(store, old, "  New   Name ") == "New Name"
+    assert "New Name" in A.all_churches(store) and old not in A.all_churches(store)
+    assert {m["id"] for m in A.ChurchStore(store, "New Name").list_members()} == people
+    assert R.recipients(A.ChurchStore(store, "New Name")) == ["pastor@branch.example"]
+    for bad in (A.home_church(), "Nowhere"):
+        with pytest.raises(ValueError):
+            A.rename_church(store, bad, "Something")
+    with pytest.raises(ValueError):
+        A.rename_church(store, "New Name", A.home_church())
+
+
 def test_the_all_churches_email_has_numbers_but_no_names(store):
     import report as R
     r = R.build_overview(store)
