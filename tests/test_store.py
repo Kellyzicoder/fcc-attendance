@@ -137,6 +137,13 @@ def test_churches_added_in_the_phone_app_show_up(store):
     assert A.all_churches(store)[0] == A.home_church()
 
 
+def test_church_list_works_with_a_store_from_before_the_update(store):
+    class Old:  # stands in for a connection object created by the previous version of the app
+        demo = True
+        def __init__(self, real): self._exec, self.list_members = real._exec, real.list_members
+    assert A.all_churches(Old(store))[0] == A.home_church()
+
+
 def test_daily_report_builds(store):
     import report as R
     r = R.build(store, dt.date.today())
