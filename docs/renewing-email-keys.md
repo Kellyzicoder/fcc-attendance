@@ -7,11 +7,11 @@ sending. There are no keys in this file, and there never should be: this reposit
 
 | | SMTP key | API key |
 |---|---|---|
-| What it sends | Sign-in emails (the code or link) for the new phone app | The daily attendance email at 1pm, and **Send report now** |
+| What it sends | Sign-in emails (the code or link) for the new phone app | The attendance email the admin sends with **Send report now** |
 | Starts with | `xsmtpsib-` | `xkeysib-` |
 | Created in Brevo under | SMTP & API → SMTP tab | SMTP & API → API Keys tab |
 | Pasted into | Supabase (1 place) | Streamlit and GitHub (2 places) |
-| If it expires | Nobody new can sign in. People already signed in are fine. | The daily email stops and **Send report now** fails. |
+| If it expires | Nobody new can sign in. People already signed in are fine. | **Send report now** fails. |
 
 A key is only shown in full at the moment it is created, so an old key cannot be looked up again. Creating a new
 one is always safe. The two kinds are not interchangeable.
@@ -29,7 +29,7 @@ The other fields, for reference: Host `smtp-relay.brevo.com`, Port `587`, Userna
 of Brevo's SMTP tab (it ends in `@smtp-brevo.com`), Sender name *FCC Attendance*, Sender email = the address
 verified in Brevo.
 
-## Part B: renew the API key (daily attendance email)
+## Part B: renew the API key (attendance email)
 
 1. In Brevo, open **SMTP & API** and switch to the **API Keys** tab. Click **Generate a new API key**, name it
    *FCC Attendance*, and copy it.
@@ -38,8 +38,8 @@ verified in Brevo.
 3. **GitHub:** in this repository, open **Settings → Secrets and variables → Actions**. Click the pencil next to
    `BREVO_API_KEY`, paste the new key, and press **Update secret**.
 4. Test the app side: in the attendance app, open **Reports** and press **Send report now**.
-5. Test the schedule side: open **Actions → Daily attendance email → Run workflow**, tick *Send now, even if
-   today's report already went out*, and run it. A green tick after about a minute means it worked.
+5. Optional: test sending from GitHub too. Open **Actions → Attendance email (manual) → Run workflow** and run it.
+   A green tick after about a minute means it worked.
 6. Back in Brevo, delete the old API key once both tests work.
 
 ## Keeping the keys safe

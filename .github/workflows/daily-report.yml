@@ -1,25 +1,12 @@
-name: Daily attendance email
+name: Attendance email (manual)
 
-# Sends the report at about 1pm New Zealand time, every day.
-# GitHub cron runs in UTC, so it tries several times (covering both NZDT UTC+13 and NZST UTC+12); the script sends
-# on the first run after 1pm NZ and skips the rest.
-# GitHub can also start scheduled runs hours late. A run any time from 1pm until 6am the next morning still
-# sends that day's report (once), so a late start means a late email rather than no email.
+# Nothing here runs on a schedule. The attendance email is sent by the admin pressing "Send report now" in the app.
+# This workflow sends the same email from GitHub when someone runs it by hand: Actions -> this workflow -> Run workflow.
 on:
-  schedule:
-    - cron: "5 0 * * *"    # 1:05pm NZ in summer
-    - cron: "20 0 * * *"
-    - cron: "40 0 * * *"
-    - cron: "5 1 * * *"    # 1:05pm NZ in winter
-    - cron: "20 1 * * *"
-    - cron: "40 1 * * *"
-    - cron: "5 2 * * *"
-    - cron: "30 4 * * *"   # catch-ups in case the earlier ones were delayed
-    - cron: "30 7 * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: "Send now, even if today's report already went out"
+        description: "Send even if a report already went out today"
         type: boolean
         default: false
 
@@ -32,28 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check the time in New Zealand
-        id: window
-        run: |
-          now=$(TZ=Pacific/Auckland date +%H%M)
-          echo "NZ time: $now"
-          if [ "${{ inputs.force }}" = "true" ] || [ "$now" -ge 1300 ] || [ "$now" -lt 0600 ]; then
-            echo "go=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "go=no" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@v4
-        if: steps.window.outputs.go == 'yes'
       - uses: actions/setup-python@v5
-        if: steps.window.outputs.go == 'yes'
         with:
           python-version: "3.12"
           cache: pip
       - name: Install
-        if: steps.window.outputs.go == 'yes'
         run: pip install -q -r requirements.txt
       - name: Send report
-        if: steps.window.outputs.go == 'yes'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}

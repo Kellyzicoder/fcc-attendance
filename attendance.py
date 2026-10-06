@@ -716,6 +716,39 @@ def church_names(base) -> list[str]:
     return names
 
 
+def rename_church(base, old: str, new: str, by: str = "") -> str:
+    """Rename a church everywhere it is recorded, all or nothing: its people, pastor list, report list, email log and
+    (when the phone app's tables exist) its sign-ins. Returns the new name; raises ValueError with a plain reason."""
+    old, new = (old or "").strip(), " ".join((new or "").split())[:60]
+    names = all_churches(base)
+    if not new:
+        raise ValueError("Type the new name.")
+    if ":" in new or "*" in new:
+        raise ValueError("A church name can't contain : or *.")
+    if old == home_church():
+        raise ValueError(f"{old} is the home church. Its name is set by `home_church` in the app's Secrets.")
+    if old not in names:
+        raise ValueError(f"There is no church called {old}.")
+    if new.lower() != old.lower() and new.lower() in {n.lower() for n in names}:
+        raise ValueError(f"There is already a church called {new}.")
+    if new == old:
+        return new
+    with base.transaction():
+        if church_names(base) or old in church_names(base):
+            base._exec("UPDATE churches SET name = ? WHERE name = ?", (new, old))  # sign-ins follow (on update cascade)
+        base._exec("UPDATE members SET church = ?, version = version + 1 WHERE TRIM(church) = ?", (new, old))
+        for prefix in ("pastors:", "report_recipients:", "pastor_group_size:"):
+            base._exec("DELETE FROM settings WHERE key = ?", (prefix + new,))
+            base._exec("UPDATE settings SET key = ? WHERE key = ?", (prefix + new, prefix + old))
+        for kind in ("manual", "daily"):
+            base._exec("UPDATE email_log SET kind = ? WHERE kind = ?", (f"{kind}:{new}", f"{kind}:{old}"))
+        base.log("rename_church", f"{old} → {new}", None, None, by)
+    base._churches = None
+    for k in ("members", "services"):
+        base._cache.pop(k, None)
+    return new
+
+
 def all_churches(base) -> list[str]:
     names = {home_church(), *church_passwords(), *church_passwords("church_admin_passwords"),
              *church_names(base), *(church_of(m) for m in base.list_members())}
@@ -769,6 +802,13 @@ class ChurchStore:
 
     def count_pending(self) -> int:
         return self._base.count_pending() if self.church == home_church() else 0
+
+    def email_history(self, limit: int = 15):
+        """Only this church's emails: a branch's are logged as kind 'manual:<church>', the home church's without one."""
+        home, mine = self.church == home_church(), ":" + self.church
+        rows = [r for r in self._base.email_history(200)
+                if ((":" not in r["kind"] and r["kind"] != "overview") if home else r["kind"].endswith(mine))]
+        return rows[:limit]
 
     def activity(self, day: str | None = None, limit: int = 300):
         ids, home = self._ids(), self.church == home_church()
@@ -967,13 +1007,13 @@ def logo_img(css_class: str = "hero-logo") -> str:
 def hero_html(eyebrow: str, title: str, subtitle: str, chips: list[str], live: bool = False) -> str:
     dot = '<span class="live-dot"></span>' if live else ""
     return (f'<div class="hero">{logo_img()}<div class="hero-text"><div class="eyebrow">{eyebrow}</div>'
-            f'<h1>{dot}{title}</h1><p>{subtitle}</p>' + "".join(f'<span class="chip">{c}</span>' for c in chips)
+            f'<h1>{dot}{title}</h1>' + (f"<p>{subtitle}</p>" if subtitle else "") + "".join(f'<span class="chip">{c}</span>' for c in chips)
             + "</div></div>")
 
 
 def header(title: str, subtitle: str, store, live: bool = False):
     chips = ["Demo data — invented names"] if store.demo else []
-    st.html(hero_html("Favourite Child Church · Attendance", title, subtitle, chips, live))
+    st.html(hero_html("Favourite Child Church · Attendance", title, "", chips, live))  # headings only: no line of text under them
 
 
 def _secret(name: str) -> str:
@@ -1400,7 +1440,8 @@ def page_dashboard():
             call = [] if df.empty else [
                 ("📞", f"{_esc(r.name)}", f"{r.phone or 'no phone'} · {r.missed} missed")
                 for r in df[df.level == "red"].head(5).itertuples()]
-            send_now_button(store, "dash_send_now")
+            if can_manage(store):  # the admin or this church's own admin sends the report; nothing goes out by itself
+                send_now_button(store, "dash_send_now")
             with st.popover("Summary for WhatsApp", icon=":material/chat:", width="stretch"):
                 with_names = st.checkbox("Include names", key="wa_names",
                                          help="Leave off for big group chats; turn on for the leaders' chat.")
@@ -1501,6 +1542,31 @@ def page_overview():
         emoji = st.toggle("Emojis", value=True, key="ov_emoji", help="Turn off for a plain-text message.")
         st.code(whatsapp_overview(rows, emoji), language=None, wrap_lines=True)
         st.caption("Tap the copy icon at the top right of the box, then paste into WhatsApp.")
+    if role(base) == "admin":
+        rename_card(base)
+
+
+def rename_card(base):
+    """HQ admin: rename a branch. People are edited on Members → Register (pick the church in the sidebar first)."""
+    others = [c for c in all_churches(base) if c != home_church()]
+    with st.expander("Rename a church", icon=":material/edit:"):
+        if not others:
+            st.caption("There are no branches to rename yet.")
+            return
+        a, b, c = st.columns([1, 1, 0.6], vertical_alignment="bottom")
+        old = a.selectbox("Church", others, key="ren_old")
+        new = b.text_input("New name", key="ren_new", placeholder=old)
+        if c.button("Rename", key="ren_go", type="primary", icon=":material/edit:", width="stretch", disabled=base.demo):
+            try:
+                done = rename_church(base, old, new, by=actor(base))
+                if st.session_state.get("church_pick") == old:
+                    st.session_state["church_pick"] = done
+                st.success(f"{old} is now {done}. Its people, pastor list and report list moved with it.")
+            except ValueError as e:
+                st.error(str(e))
+        st.caption("If this church has lines under `[church_admin_passwords]` or `[church_passwords]` in the app's "
+                   "Secrets, change the name there too, or the old name comes back as an empty church and its "
+                   "team can't sign in. To edit the people in a church, pick it in the sidebar and open Members → Register.")
 
 
 @db_safe
@@ -1880,7 +1946,7 @@ def register_editor(store):
             "church": st.column_config.SelectboxColumn("Church", options=all_churches(base_store()), required=True,
                                                        help="Change this to move someone to another church"),
             "pastor": st.column_config.TextColumn("Pastor", help="The pastor who looks after this person", max_chars=60),
-            "role": st.column_config.TextColumn("Ministry / role"),
+            "role": st.column_config.TextColumn("Ministry / roles", help="Someone with several roles: separate them with commas, e.g. Tech Team, Worship Team"),
             "status": st.column_config.SelectboxColumn("Status", options=STATUSES + extra),
             "date_joined": st.column_config.TextColumn("Joined", help="DD/MM/YYYY", max_chars=10),
             "invited_by": st.column_config.TextColumn("Invited by"),
@@ -1998,7 +2064,7 @@ def page_members():
             st.markdown(SETUP_GUIDE)
 
 
-ACTIVITY_LABELS = {"tick": "Ticked in", "untick": "Unticked", "clear_service": "Unticked everyone", "edit": "Edited", "add_person": "Added",
+ACTIVITY_LABELS = {"rename_church": "Renamed a church", "tick": "Ticked in", "untick": "Unticked", "clear_service": "Unticked everyone", "edit": "Edited", "add_person": "Added",
                    "signup_approved": "Approved sign-up", "signup_rejected": "Rejected sign-up"}
 RESULT_LABELS = {"done": "Done", "already": "No change (already done)",
                  "changed": "Blocked: someone else changed it first"}
@@ -2283,7 +2349,7 @@ def send_now_button(store, key: str, label: str = "Email today's report now", fu
     cfg = _mail_cfg()
     if st.button(label, key=key, icon=":material/forward_to_inbox:", type="primary" if full else "secondary",
                  width="stretch", disabled=store.demo or not cfg["ready"],
-                 help=None if cfg["ready"] else "Add brevo_api_key in the app's Secrets first (see Reports)."):
+                 help=None if cfg["ready"] else "Add brevo_api_key in the app's Secrets first."):
         with st.spinner("Sending…"):
             try:
                 out = R.send(store, cfg, kind="manual")
@@ -2294,46 +2360,61 @@ def send_now_button(store, key: str, label: str = "Email today's report now", fu
     return False
 
 
-REPORT_SETUP = """
-**One-time setup (about 5 minutes)** — the report is sent through **Brevo**, a free email service (300 emails a day).
-
-1. **Brevo account** — go to **brevo.com** → *Sign up free* using the church email (greaterloveauckland@gmail.com)
-   and confirm the email Brevo sends you. That address becomes the verified *sender*.
-2. **API key** — in Brevo, click your name (top right) → **SMTP & API** → **API Keys** tab → **Generate a new API key**,
-   name it *FCC Attendance*, and copy it (it starts with `xkeysib-`).
-3. **This app** — share.streamlit.io → *fcc-attendance* → ⋮ → **Settings → Secrets**, add:
-   ```toml
-   brevo_api_key = "xkeysib-…"
-   report_sender = "greaterloveauckland@gmail.com"
-   ```
-4. **The 1pm schedule** — github.com/Kellyzicoder/fcc-attendance → **Settings → Secrets and variables → Actions →
-   New repository secret**, add: `DATABASE_URL` (same as in the app's Secrets), `BREVO_API_KEY`, `REPORT_SENDER`.
-
-Then press **Send report now** above to test. The first one may land in *Spam* — mark it *Not spam* once.
-The daily email goes out at about 1pm NZ time; if it ever fails, GitHub emails the repo owner.
-"""
+def overview_card(cfg: dict):
+    """HQ only: email every church's numbers in one go (no names), to its own list of people."""
+    import report as R
+    base = base_store()
+    with card("rep_all"):
+        st.markdown("**All churches in one email**")
+        st.caption("Every church's numbers side by side: present, adults, kids, first-timers, red and yellow. "
+                   "No names or phone numbers. To send one church's full report, pick that church in the sidebar.")
+        text = st.text_area("Who gets the all-churches numbers (one per line)", "\n".join(R.overview_recipients(base)),
+                            height=100, key="rep_all_to", disabled=base.demo)
+        last = [h for h in base.email_history(200) if h["kind"] == "overview" and h["ok"]][:1]
+        if last:
+            st.caption(f"Last sent {_parse_times([last[0]['sent_at']]).dt.strftime('%a %d %b %H:%M').iloc[0]}.")
+        a, b = st.columns(2)
+        if a.button("Save this list", key="rep_all_save", icon=":material/save:", disabled=base.demo, width="stretch"):
+            good, bad = R.save_overview_recipients(base, text)
+            if bad:
+                st.error("Not saved — these don't look like email addresses: " + ", ".join(bad))
+            elif good:
+                st.success(f"Saved {len(good)} recipient{'s' if len(good) != 1 else ''}.")
+            else:
+                st.error("Add at least one email address.")
+        if b.button("Send all churches now", key="rep_all_send", icon=":material/public:", type="primary", width="stretch",
+                    disabled=base.demo or not cfg["ready"]):
+            with st.spinner("Sending…"):
+                try:
+                    out = R.send_overview(base, cfg)
+                    st.toast(f"All-churches numbers sent to {', '.join(out['to'])}", icon=":material/mark_email_read:")
+                except Exception as e:
+                    st.error(f"Couldn't send the email: {e}", icon=":material/error:")
 
 
 @db_safe
 def page_reports():
     import report as R
     store = get_store()
-    header("Reports", "The 1pm email to church leaders — who gets it, what's in it, and send it now", store)
-    if not gate(store, hq=True):
+    header("Reports", f"The {store.church} email to its leaders — who gets it, what's in it, and send it", store)
+    if not gate(store, admin=True):
         return
+    hq = is_admin(store)
     demo_note(store)
     cfg = _mail_cfg()
     left, right = st.columns([1, 1.4], gap="medium")
     with left:
         with card("rep_send"):
             st.markdown("**Send the report**")
-            st.caption("Goes out automatically every day at about 1pm (NZ). Use this to send the latest numbers any time — "
-                       "e.g. straight after the service, before 6pm.")
+            st.caption(f"Nothing is sent automatically. Press the button to email {store.church}'s latest numbers and "
+                       "follow-up list to everyone on its list, e.g. straight after the service for the workers' meeting.")
             if not cfg["ready"]:
-                st.warning("Email isn't set up yet — see the steps below.", icon=":material/settings:")
+                st.warning("Email sending isn't connected yet (the Brevo key is missing from the app's Secrets).", icon=":material/settings:")
             send_now_button(store, "rep_send_now", "Send report now", full=True)
         with card("rep_to"):
-            st.markdown("**Who gets it**")
+            st.markdown(f"**Who gets {store.church}'s report**")
+            st.caption("This list belongs to this church only. The report has names and phone numbers, so add only "
+                       "its pastor and leaders.")
             current = R.recipients(store)
             text = st.text_area("Email addresses (one per line)", "\n".join(current), height=130, key="rep_to_text",
                                 disabled=store.demo)
@@ -2353,11 +2434,11 @@ def page_reports():
             else:
                 st.dataframe(pd.DataFrame({
                     "Sent": _parse_times([h["sent_at"] for h in hist]).dt.strftime("%a %d %b %H:%M"),
-                    "Type": ["1pm (automatic)" if h["kind"] == "daily" else "Sent from the app" for h in hist],
+                    "Type": ["Automatic (old schedule)" if h["kind"] == "daily" else "Sent from the app" for h in hist],
                     "": ["✅ Sent" if h["ok"] else "❌ Failed" for h in hist],
                     "Details": [h["detail"] for h in hist]}), hide_index=True, width="stretch")
-        with st.expander("Set up email sending", icon=":material/settings:", expanded=not cfg["ready"]):
-            st.markdown(REPORT_SETUP)
+        if hq:
+            overview_card(cfg)
     with right, card("rep_preview"):
         r = R.build(store)
         st.markdown(f"**Preview** · {r['subject']}")
@@ -2435,90 +2516,3 @@ with psycopg.connect("postgresql://…") as conn:
 
 Never commit connection strings or your CSVs to GitHub — the repo is public. Both are blocked in `.gitignore`.
 """
-
-
-EXAMPLES = {
-    "Attendance per service": """SELECT s.service_date, s.name, COUNT(a.member_id) AS present
-FROM services s
-LEFT JOIN attendance a ON a.service_date = s.service_date
-GROUP BY s.service_date, s.name
-ORDER BY s.service_date DESC""",
-    "Missed in a row (who to call)": """WITH last_seen AS (
-  SELECT m.id, m.full_name, m.phone, MAX(a.service_date) AS last_seen
-  FROM members m
-  LEFT JOIN attendance a ON a.member_id = m.id
-  GROUP BY m.id, m.full_name, m.phone
-)
-SELECT l.full_name, l.phone, l.last_seen,
-       (SELECT COUNT(*) FROM services s
-        WHERE s.service_date > COALESCE(l.last_seen, '1900-01-01')
-          AND s.service_date <= CURRENT_DATE) AS missed_in_a_row
-FROM last_seen l
-ORDER BY missed_in_a_row DESC, l.full_name""",
-    "Attendance rate per person": """SELECT m.full_name, m.group_name,
-       COUNT(a.member_id) AS attended,
-       (SELECT COUNT(*) FROM services) AS services,
-       ROUND(100.0 * COUNT(a.member_id) / NULLIF((SELECT COUNT(*) FROM services), 0), 1) AS rate_pct
-FROM members m
-LEFT JOIN attendance a ON a.member_id = m.id
-GROUP BY m.id, m.full_name, m.group_name
-ORDER BY rate_pct DESC""",
-    "First-timers: did they come back?": """SELECT m.full_name, m.first_visit, m.invited_by,
-       COUNT(a.member_id) AS visits, MAX(a.service_date) AS last_seen
-FROM members m
-LEFT JOIN attendance a ON a.member_id = m.id
-WHERE m.type = 'first_timer'
-GROUP BY m.id, m.full_name, m.first_visit, m.invited_by
-ORDER BY m.first_visit DESC""",
-    "Attendance by group": """SELECT COALESCE(NULLIF(m.group_name, ''), '(no group)') AS grp,
-       COUNT(DISTINCT m.id) AS people, COUNT(a.member_id) AS check_ins
-FROM members m
-LEFT JOIN attendance a ON a.member_id = m.id
-GROUP BY 1
-ORDER BY check_ins DESC""",
-    "Who invited the most first-timers": """SELECT invited_by, COUNT(*) AS first_timers
-FROM members
-WHERE invited_by IS NOT NULL AND invited_by <> ''
-GROUP BY invited_by
-ORDER BY first_timers DESC""",
-}
-
-
-@db_safe
-def page_sql():
-    store = get_store()
-    header("SQL", "Ask the database anything — read-only, so nothing can be changed from here", store)
-    if not gate(store, hq=True):
-        return
-    demo_note(store)
-    mode, _ = layout_prefs()
-    left, right = (st.container(), st.container()) if mode == "Stacked" else st.columns([2, 5])
-    with left, card("sql_tables"):
-        st.markdown("**Tables**")
-        st.code("members\n  id, full_name, phone,\n  email, group_name, role,\n  status, type,\n  date_joined, first_visit,\n"
-                "  invited_by, follow_up\n\nservices\n  service_date, name\n\nattendance\n"
-                "  service_date,\n  member_id, checked_at", language=None)
-        pick = st.selectbox("Example queries", list(EXAMPLES), index=None, placeholder="Pick an example…")
-        if pick and st.session_state.get("sql_pick") != pick:
-            st.session_state.sql_pick = pick
-            st.session_state.sql_text = EXAMPLES[pick]
-    with right:
-        st.session_state.setdefault("sql_text", EXAMPLES["Missed in a row (who to call)"])
-        sql = st.text_area("SQL", key="sql_text", height=230, label_visibility="collapsed")
-        run = st.button("Run query", type="primary", icon=":material/play_arrow:")
-        if run or "sql_result" not in st.session_state:
-            try:
-                t0 = dt.datetime.now()
-                df = store.run_query(sql)
-                st.session_state.sql_result = (df, (dt.datetime.now() - t0).total_seconds(), None)
-            except Exception as e:  # show the database's own error message
-                st.session_state.sql_result = (None, 0, str(e).strip().splitlines()[0][:400])
-        df, secs, err = st.session_state.sql_result
-        if err:
-            st.error(err, icon=":material/error:")
-        elif df is not None:
-            with card("sql_result"):
-                st.caption(f"{len(df):,} rows · {secs * 1000:.0f} ms" + (" · first 5,000 shown" if len(df) >= 5000 else ""))
-                st.dataframe(df, hide_index=True, width="stretch", height=min(38 * (len(df) + 1) + 4, 520))
-                st.download_button("Download results (CSV)", df.to_csv(index=False), "query_results.csv", "text/csv",
-                                   icon=":material/download:")

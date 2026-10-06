@@ -150,6 +150,49 @@ def test_daily_report_builds(store):
     assert r["subject"] and "<html" in r["html"].lower() and len(r["xlsx"]) > 1000
 
 
+def test_each_church_has_its_own_report_list_and_log(store):
+    import report as R
+    home, branch = A.ChurchStore(store, A.home_church()), A.ChurchStore(store, "Sydney")
+    assert R.recipients(branch) == []  # a branch never borrows another church's list
+    assert R.save_recipients(branch, "pastor@sydney.example")[0] == ["pastor@sydney.example"]
+    assert R.recipients(branch) == ["pastor@sydney.example"] and "pastor@sydney.example" not in R.recipients(home)
+    assert "Sydney" in R.build(branch)["subject"] and A.home_church() in R.build(home)["subject"]
+    sent = []
+    R._send_brevo = lambda cfg, to, r: sent.append((to, r["subject"]))
+    cfg = dict(ready=True, brevo_api_key="test", sender="x@example.com")
+    R.send(branch, cfg); R.send(home, cfg); R.send_overview(store, cfg)
+    assert [h["kind"] for h in branch.email_history()] == ["manual:Sydney"]
+    assert [h["kind"] for h in home.email_history()] == ["manual"]
+    empty = A.ChurchStore(store, "Melbourne")
+    with pytest.raises(RuntimeError):
+        R.send(empty, cfg)
+
+
+def test_renaming_a_church_moves_everything_with_it(store):
+    import report as R
+    old = next(c for c in A.all_churches(store) if c != A.home_church())
+    people = {m["id"] for m in A.ChurchStore(store, old).list_members()}
+    assert people
+    R.save_recipients(A.ChurchStore(store, old), "pastor@branch.example")
+    assert A.rename_church(store, old, "  New   Name ") == "New Name"
+    assert "New Name" in A.all_churches(store) and old not in A.all_churches(store)
+    assert {m["id"] for m in A.ChurchStore(store, "New Name").list_members()} == people
+    assert R.recipients(A.ChurchStore(store, "New Name")) == ["pastor@branch.example"]
+    for bad in (A.home_church(), "Nowhere"):
+        with pytest.raises(ValueError):
+            A.rename_church(store, bad, "Something")
+    with pytest.raises(ValueError):
+        A.rename_church(store, "New Name", A.home_church())
+
+
+def test_the_all_churches_email_has_numbers_but_no_names(store):
+    import report as R
+    r = R.build_overview(store)
+    assert "all churches" in r["subject"] and len(r["xlsx"]) > 1000
+    for m in store.list_members():
+        assert m["full_name"] not in r["html"] and m["full_name"] not in r["text"]
+
+
 def test_blue_marks_people_who_missed_the_latest_service_only(store):
     df = A.missed_streaks(store.list_members(), store.list_services())
     assert set(df[df.flag == "blue"].missed) <= {1, 2}

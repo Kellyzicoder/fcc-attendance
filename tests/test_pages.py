@@ -6,7 +6,7 @@ from streamlit.testing.v1 import AppTest
 
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
-PAGES = ["page_dashboard", "page_followup", "page_live", "page_insights", "page_members", "page_reports", "page_sql",
+PAGES = ["page_dashboard", "page_followup", "page_live", "page_insights", "page_members", "page_reports",
          "page_overview"]
 
 
@@ -46,13 +46,13 @@ def test_a_branch_team_cannot_open_admin_pages():
     assert at.warning and not at.tabs
 
 
-def test_a_church_admin_gets_members_but_not_reports_or_sql():
+def test_a_church_admin_gets_members_and_their_own_reports():
     def script():
         import streamlit as st
         import attendance as A
         st.session_state["demo_as"] = "Church admin"
         A.page_members()
-        A.page_sql()
+        A.page_reports()
     at = AppTest.from_function(script, default_timeout=120).run()
     assert not at.exception, [e.value for e in at.exception]
-    assert at.tabs and len(at.warning) == 1
+    assert at.tabs and at.text_area  # their register, and their own church's email list

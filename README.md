@@ -14,16 +14,15 @@ missing and follow up.
 | Live | Real-time view of today's check-ins — count, first-timers, arrivals over time, latest arrivals. Refreshes itself; good on a screen during service. |
 | Insights | Attendance per service (members vs first-timers, 4-service average), first-timers per month, first-timer return rate, attendance by group. |
 | Members | The register (editable), sign-ups from the welcome form to approve, add people, import the Google Sheets CSV exports, and an **Activity** log of every change. |
-| Reports | The daily email to leaders: who gets it (add or remove addresses), a live preview, **Send report now**, the Excel attachment, and a log of every email sent. |
-| SQL | Read-only SQL queries against the database, with ready-made examples; download results. |
+| Reports | The email to leaders: who gets it (add or remove addresses), a live preview, **Send report now**, the Excel attachment, and a log of every email sent. Nothing is sent automatically. |
 
 **Who sees what.** Passwords are set in the app's Secrets:
 
 | Secret | Who | Sees |
 |---|---|---|
-| `admin_password` | Admin | Every church with names (pick the church in the sidebar), the **All churches** overview, Members, Reports and SQL |
+| `admin_password` | Admin | Every church with names (pick the church in the sidebar), the **All churches** overview (where a branch can also be renamed), Members and Reports |
 | `bishop_password` | Bishop | The **All churches** overview only: numbers for every branch, never names or phone numbers |
-| `[church_admin_passwords]` (one line per church, e.g. `Sydney = "…"`) | A church's admin: its pastor and follow-up leads | Their own church only, including its Members page (register, add people, activity). No other church, no Reports or SQL |
+| `[church_admin_passwords]` (one line per church, e.g. `Sydney = "…"`) | A church's admin: its pastor and follow-up leads | Their own church only, including its Members page (register, add people, activity) and its Reports page (their church's email list and Send report now). No other church |
 | `[church_passwords]` (one line per branch, e.g. `Sydney = "…"`) | A branch's team | Their own church only |
 | `attendance_password` | The home church's team | The home church only (`home_church`, default Auckland) |
 
@@ -76,19 +75,22 @@ To undo, press **Revert** on the merged pull request.
 Dark dashboard theme in the church colours (logo greens and gold). Chart colours are checked for colour-blind
 separation and contrast. The sidebar has **Layout** controls (names per row on Check-in, panel stacking).
 
-## Daily email
+## Attendance email
 
-Every day at about 1pm (NZ) a summary goes to the addresses on the Reports page (default greaterloveauckland@gmail.com):
-check-ins, who needs a follow-up call (with phone numbers), new welcome-form sign-ups, plus an Excel workbook
-(Checked in · Follow-up · Sign-ups · Services) that opens in Excel or Google Sheets.
+Nothing is sent automatically. Each church has its own list of addresses on its Reports page. When that church's
+admin (or the HQ admin, with the church picked in the sidebar) presses **Send report now**, a summary of that church
+goes to its list: check-ins, who needs a follow-up call
+(with phone numbers), new welcome-form sign-ups, plus an Excel workbook (Checked in · Follow-up · Sign-ups ·
+Services) that opens in Excel or Google Sheets. Every email is logged in `email_log`, and each church only sees its
+own. A branch with no list yet sends to nobody; it never falls back to another church's list. The HQ admin can also
+send **All churches in one email**: every church's numbers side by side, with no names.
 
-- Scheduled by `.github/workflows/daily-report.yml` (GitHub Actions). Cron is UTC, so it tries several times across
-  NZST/NZDT; `scripts/daily_report.py` sends on the first run after 1pm NZ and logs it in `email_log`, so later
-  runs that day skip. A failed run makes GitHub email the repo owner.
-- Sent through Brevo's free email API (300/day). Secrets: in the app `brevo_api_key`, `report_sender`; in GitHub
-  Actions `DATABASE_URL`, `BREVO_API_KEY`, `REPORT_SENDER`. (A Gmail app password via `smtp_user`/`smtp_password`
-  also works as a fallback.)
-- Leaders can also press **Send report now** (Dashboard or Reports) any time, e.g. right after a service.
+- Sent through Brevo's free email API (300/day). Secrets in the app: `brevo_api_key`, `report_sender`. (A Gmail app
+  password via `smtp_user`/`smtp_password` also works as a fallback.)
+- `.github/workflows/daily-report.yml` can send the same email from GitHub, but only when someone runs it by hand
+  (Actions → *Attendance email (manual)* → Run workflow). It has no schedule. It needs the GitHub Actions secrets
+  `DATABASE_URL`, `BREVO_API_KEY`, `REPORT_SENDER`.
+- Renewing the Brevo keys: see `docs/renewing-email-keys.md`.
 
 ## Data
 
@@ -101,7 +103,7 @@ Stored in a **Postgres** database (Supabase) — never in this repo. Tables:
 - `registrations` — sign-ups from the [welcome form](https://github.com/Kellyzicoder/fcc-welcome), approved under *Members → Sign-ups*
 
 Until `database_url` is set in the app's Streamlit **Secrets**, the pages run on a SQLite demo database with invented
-names. Setup steps are in the app under *Members → Setup*. Query the data from the SQL page, Supabase's SQL editor,
+names. Setup steps are in the app under *Members → Setup*. Query the data from Supabase's SQL editor,
 or Python (`pandas.read_sql`).
 
 CSV files and connection strings are blocked by `.gitignore`; don't commit them — this repo is public.
