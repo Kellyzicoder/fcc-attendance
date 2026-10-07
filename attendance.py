@@ -866,11 +866,19 @@ def split_ages(ids, mem: dict) -> tuple[int, int]:
     return len(ids) - kids, kids
 
 
+def is_sunday(day: str) -> bool:
+    try:
+        return dt.date.fromisoformat(str(day)[:10]).weekday() == 6
+    except ValueError:
+        return True  # an unreadable date is counted, as before
+
+
 def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | None = None,
                    archive: str = "hide") -> pd.DataFrame:
     """Per person: services missed in a row (most recent first), last seen, and a yellow/red flag.
 
-    Only services on or after a person's start (date joined / first visit) count against them.
+    Only Sunday services on or after a person's start (date joined / first visit) count against them; coming to
+    any service, midweek included, counts as being seen.
     `level` is ok / yellow / red (the follow-up rule). `flag` is the same but shows "blue" for someone who is
     still ok yet missed the latest service (1–2 in a row), so leaders can see it early.
     People not seen for ARCHIVE_DAYS (two years) are archived: archive="hide" leaves them out (the default, so
@@ -890,7 +898,8 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
             if m["id"] in (s.get("present") or {}):
                 last_seen = s["date"]
                 break
-            streak += 1
+            if is_sunday(s["date"]):  # midweek services are recorded but never count as missed
+                streak += 1
         if last_seen is None:  # ticked before their recorded start date still counts as seen
             last_seen = next((s["date"] for s in reversed(svcs) if m["id"] in (s.get("present") or {})), None)
         # last sign of them: last tick, else when they joined / first visited / were added
