@@ -289,3 +289,16 @@ def test_email_addresses_are_checked_in_plain_words():
     assert "after the @" in R.email_problem("a@b")
     assert "did you mean a@gmail.com" in R.email_problem("a@gmial.com")
     assert R.email_problem("")
+
+
+def test_only_sunday_services_count_as_missed():
+    people = [dict(id="a", full_name="Sunday Only", status="", date_joined="2026-01-01"),
+              dict(id="b", full_name="Gone Quiet", status="", date_joined="2026-01-01"),
+              dict(id="c", full_name="Midweek Only", status="", date_joined="2026-01-01")]
+    days = ["2026-09-06", "2026-09-09", "2026-09-13", "2026-09-16", "2026-09-20", "2026-09-23"]  # Sun, Wed, Sun, Wed...
+    services = [dict(date=d, present={"a": "t"} if A.is_sunday(d) else {"c": "t"}) for d in days]
+    services[0]["present"]["b"] = "t"
+    df = A.missed_streaks(people, services, upto=A.dt.date(2026, 9, 24)).set_index("id")
+    assert df.loc["a", "missed"] == 0   # never comes on Wednesday, never flagged for it
+    assert df.loc["b", "missed"] == 2   # two Sundays missed; the three Wednesdays are not counted
+    assert df.loc["c", "missed"] == 0   # seen at the latest midweek service
