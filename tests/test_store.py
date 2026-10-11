@@ -307,3 +307,12 @@ def test_only_sunday_services_count_as_missed():
 def test_a_person_can_have_several_pastors():
     assert A.pastors_of("Pastor Ama, Pastor Kofi ,") == ["Pastor Ama", "Pastor Kofi"]
     assert A.pastors_of(None) == [] and A.pastors_of("  ") == []
+
+
+def test_visitors_are_never_flagged_for_follow_up():
+    people = [dict(id="v", full_name="Just Visiting", status="", type="visitor", first_visit="2026-09-06"),
+              dict(id="m", full_name="Regular", status="", type="member", date_joined="2026-09-06")]
+    days = ["2026-09-06", "2026-09-13", "2026-09-20", "2026-09-27", "2026-10-04", "2026-10-11"]
+    services = [dict(date=d, present={"v": "t", "m": "t"} if d == days[0] else {}) for d in days]
+    df = A.missed_streaks(people, services, upto=A.dt.date(2026, 10, 12)).set_index("id")
+    assert df.loc["m", "level"] == "red" and df.loc["v", "level"] == "ok" and df.loc["v", "missed"] == 0
