@@ -873,6 +873,9 @@ def is_sunday(day: str) -> bool:
         return True  # an unreadable date is counted, as before
 
 
+TYPE_NAME = {"member": "Member", "first_timer": "First-timer", "visitor": "Visitor"}  # same choices as the phone app
+
+
 def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | None = None,
                    archive: str = "hide") -> pd.DataFrame:
     """Per person: services missed in a row (most recent first), last seen, and a yellow/red flag.
@@ -908,6 +911,8 @@ def missed_streaks(members: list[dict], services: list[dict], upto: dt.date | No
         if (archive == "hide" and archived) or (archive == "only" and not archived):
             continue
         attended = sum(m["id"] in (s.get("present") or {}) for s in mine)
+        if m.get("type") == "visitor":  # visitors are never chased on follow-up
+            streak = 0
         level = "red" if streak >= RED_AT else "yellow" if streak >= YELLOW_AT else "ok"
         rows.append(dict(id=m["id"], name=m.get("full_name", ""), missed=streak, level=level, last_seen=last_seen,
                          attended=attended, eligible=len(mine), phone=m.get("phone", ""), group=m.get("group", ""),
@@ -1619,7 +1624,7 @@ def person_panel(store):
     came = [s for s in services if mid in (s.get("present") or {})]
     row = missed_streaks([m], services, archive="all")
     r = row.iloc[0] if not row.empty else None
-    facts = [f"{'First-timer' if m.get('type') == 'first_timer' else 'Member'}"]
+    facts = [TYPE_NAME.get(m.get("type"), "Member")]
     for label, key in (("Status", "status"), ("Pastor", "pastor"), ("Group", "group"), ("Phone", "phone")):
         if m.get(key):
             facts.append(f"{label}: {m[key]}")
@@ -1665,6 +1670,11 @@ def group_size(store) -> int:
         return PASTOR_GROUP_SIZE
 
 
+def pastors_of(raw) -> list[str]:
+    """A person's pastors from the pastor field, which holds one name or several separated by commas."""
+    return [p.strip() for p in str(raw or "").split(",") if p.strip()]
+
+
 def pastors_panel(store):
     """Each pastor's small group of names, with who was there last service and who needs a call."""
     members, services = store.list_members(), store.list_services()
@@ -1674,8 +1684,10 @@ def pastors_panel(store):
         return
     past = sorted([s for s in services if s.get("date", "") <= today().isoformat()], key=lambda s: s["date"])
     here = set((past[-1].get("present") or {})) if past else set()
-    df = df.assign(here=df.id.isin(here), pastor=df.pastor.str.strip())
-    named = df[df.pastor != ""]
+    # someone can have several pastors, kept comma-separated ("Pastor A, Pastor B"): they count under each one
+    df = df.assign(here=df.id.isin(here), pastors=df.pastor.map(pastors_of))
+    has = df.pastors.map(bool)
+    named = df[has].explode("pastors").assign(pastor=lambda d: d.pastors)
     if named.empty:
         st.info("No one has a pastor yet. An admin can type a pastor's name in the **Pastor** column under "
                 "**Members → Register**, and their lists appear here.",
@@ -1695,11 +1707,11 @@ def pastors_panel(store):
             size = int(new)
     summary["People"] = summary.People.map(lambda n: f"{n} of {size}" + (" ⚠️" if n > size else ""))
     with card("pastor_all"):
-        st.markdown(f"**All pastors** · {len(summary)} pastors · {len(named)} people assigned · "
-                    f"{len(df) - len(named)} not assigned yet")
+        st.markdown(f"**All pastors** · {len(summary)} pastors · {int(has.sum())} people assigned · "
+                    f"{int((~has).sum())} not assigned yet")
         st.dataframe(summary, hide_index=True, width="stretch")
     who = st.selectbox("Pastor", sorted(named.pastor.unique(), key=str.lower) + ["Not assigned yet"], key="pastor_pick")
-    mine = df[df.pastor == ""] if who == "Not assigned yet" else df[df.pastor == who]
+    mine = df[~has] if who == "Not assigned yet" else df[df.pastors.map(lambda ps: who in ps)]
     table = pd.DataFrame({"Status": mine.flag.map(LEVEL_LABEL), "Name": mine.name,
                           "This service": mine.here.map({True: "✅ Came", False: "—"}),
                           "Missed in a row": mine.missed,
@@ -1816,7 +1828,7 @@ def followup_table(view: pd.DataFrame) -> pd.DataFrame:
         "Attendance": view.rate, "Phone": view.phone, "Church": view.church, "Pastor": view.pastor,
         "Adult / Child": view.age,
         "Group": view.group,
-        "Type": view.type.map({"member": "Member", "first_timer": "First-timer"}).fillna(view.type),
+        "Type": view.type.map(TYPE_NAME).fillna(view.type),
         "Invited by": view.invited_by})
 
 
@@ -1898,7 +1910,7 @@ def _as_date(v) -> str:
 def all_churches_xlsx(base) -> bytes:
     """Everyone on every register as one Excel file: an "Everyone" sheet with a Church column, then a sheet per church."""
     import io
-    rows = [{"Church": church_of(m), "Name": m.get("full_name", ""), "Type": "First-timer" if m.get("type") == "first_timer" else "Member",
+    rows = [{"Church": church_of(m), "Name": m.get("full_name", ""), "Type": TYPE_NAME.get(m.get("type"), "Member"),
              "Adult / Child": "Child" if is_child(m) else "Adult", "Phone": m.get("phone", ""), "Email": m.get("email", ""),
              "Pastor": m.get("pastor", ""), "Group": m.get("group", ""), "Status": m.get("status", "") or "Active",
              "Joined": fmt_date(m.get("date_joined"), "%d/%m/%Y", "")} for m in base.list_members()]
@@ -1947,7 +1959,7 @@ def register_editor(store):
         view, key=ed_key, hide_index=True, width="stretch", height=520, num_rows="fixed",
         column_config={
             "full_name": st.column_config.TextColumn("Name", required=True, max_chars=100),
-            "type": st.column_config.SelectboxColumn("Type", options=["member", "first_timer"], required=True),
+            "type": st.column_config.SelectboxColumn("Type", options=list(TYPE_NAME), required=True),
             "age_group": st.column_config.SelectboxColumn("Adult / Child", options=["Adult", "Child"], required=True),
             "phone": st.column_config.TextColumn("Phone", max_chars=30),
             "email": st.column_config.TextColumn("Email", max_chars=120, validate=r"^$|^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$"),
@@ -2035,7 +2047,7 @@ def page_members():
         with st.form("member_add", clear_on_submit=True):
             a, b = st.columns(2)
             name = a.text_input("Full name")
-            kind = b.selectbox("Type", ["member", "first_timer"], format_func=lambda k: k.replace("_", "-").title())
+            kind = b.selectbox("Type", list(TYPE_NAME), format_func=TYPE_NAME.get)
             phone, email = a.text_input("Phone"), b.text_input("Email")
             group, role = a.text_input("Group"), b.text_input("Ministry / role")
             age = a.radio("Adult or child", ["Adult", "Child"], horizontal=True)
@@ -2049,7 +2061,7 @@ def page_members():
                                                age_group=age,
                                                email=email.strip().lower(), group=group.strip(), role=role.strip(), status="",
                                                date_joined=today().isoformat() if kind == "member" else "",
-                                               first_visit=today().isoformat() if kind == "first_timer" else "",
+                                               first_visit=today().isoformat() if kind != "member" else "",
                                                created_at=now_iso())])
                     st.success(f"Added {name.strip()}.")
 
