@@ -302,3 +302,8 @@ def test_only_sunday_services_count_as_missed():
     assert df.loc["a", "missed"] == 0   # never comes on Wednesday, never flagged for it
     assert df.loc["b", "missed"] == 2   # two Sundays missed; the three Wednesdays are not counted
     assert df.loc["c", "missed"] == 0   # seen at the latest midweek service
+
+
+def test_a_person_can_have_several_pastors():
+    assert A.pastors_of("Pastor Ama, Pastor Kofi ,") == ["Pastor Ama", "Pastor Kofi"]
+    assert A.pastors_of(None) == [] and A.pastors_of("  ") == []
