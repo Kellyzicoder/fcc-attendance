@@ -1665,6 +1665,11 @@ def group_size(store) -> int:
         return PASTOR_GROUP_SIZE
 
 
+def pastors_of(raw) -> list[str]:
+    """A person's pastors from the pastor field, which holds one name or several separated by commas."""
+    return [p.strip() for p in str(raw or "").split(",") if p.strip()]
+
+
 def pastors_panel(store):
     """Each pastor's small group of names, with who was there last service and who needs a call."""
     members, services = store.list_members(), store.list_services()
@@ -1674,8 +1679,10 @@ def pastors_panel(store):
         return
     past = sorted([s for s in services if s.get("date", "") <= today().isoformat()], key=lambda s: s["date"])
     here = set((past[-1].get("present") or {})) if past else set()
-    df = df.assign(here=df.id.isin(here), pastor=df.pastor.str.strip())
-    named = df[df.pastor != ""]
+    # someone can have several pastors, kept comma-separated ("Pastor A, Pastor B"): they count under each one
+    df = df.assign(here=df.id.isin(here), pastors=df.pastor.map(pastors_of))
+    has = df.pastors.map(bool)
+    named = df[has].explode("pastors").assign(pastor=lambda d: d.pastors)
     if named.empty:
         st.info("No one has a pastor yet. An admin can type a pastor's name in the **Pastor** column under "
                 "**Members → Register**, and their lists appear here.",
@@ -1695,11 +1702,11 @@ def pastors_panel(store):
             size = int(new)
     summary["People"] = summary.People.map(lambda n: f"{n} of {size}" + (" ⚠️" if n > size else ""))
     with card("pastor_all"):
-        st.markdown(f"**All pastors** · {len(summary)} pastors · {len(named)} people assigned · "
-                    f"{len(df) - len(named)} not assigned yet")
+        st.markdown(f"**All pastors** · {len(summary)} pastors · {int(has.sum())} people assigned · "
+                    f"{int((~has).sum())} not assigned yet")
         st.dataframe(summary, hide_index=True, width="stretch")
     who = st.selectbox("Pastor", sorted(named.pastor.unique(), key=str.lower) + ["Not assigned yet"], key="pastor_pick")
-    mine = df[df.pastor == ""] if who == "Not assigned yet" else df[df.pastor == who]
+    mine = df[~has] if who == "Not assigned yet" else df[df.pastors.map(lambda ps: who in ps)]
     table = pd.DataFrame({"Status": mine.flag.map(LEVEL_LABEL), "Name": mine.name,
                           "This service": mine.here.map({True: "✅ Came", False: "—"}),
                           "Missed in a row": mine.missed,
